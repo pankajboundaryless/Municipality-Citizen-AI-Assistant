@@ -443,6 +443,10 @@ async def websocket_endpoint(
     # so they are already cached when submit_to_municipality is called
     asyncio.create_task(_maestro.warmup())
 
+    # Pre-fetch UiPath token + folder + release key in the background
+    # so they are already cached when submit_to_municipality is called
+    asyncio.create_task(_maestro.warmup())
+
     audio_q: asyncio.Queue = asyncio.Queue()
     video_q: asyncio.Queue = asyncio.Queue()
     text_q: asyncio.Queue = asyncio.Queue()
