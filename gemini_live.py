@@ -133,8 +133,9 @@ class GeminiLive:
                                 for fc in tool_call.function_calls:
                                     func_name = fc.name
                                     args = fc.args or {}
-                                    
+
                                     if func_name in self.tool_mapping:
+                                        await event_queue.put({"type": "tool_start", "name": func_name})
                                         try:
                                             tool_func = self.tool_mapping[func_name]
                                             if inspect.iscoroutinefunction(tool_func):
@@ -144,7 +145,7 @@ class GeminiLive:
                                                 result = await loop.run_in_executor(None, lambda: tool_func(**args))
                                         except Exception as e:
                                             result = f"Error: {e}"
-                                        
+
                                         function_responses.append(types.FunctionResponse(
                                             name=func_name,
                                             id=fc.id,

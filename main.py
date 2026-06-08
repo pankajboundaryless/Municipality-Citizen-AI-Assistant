@@ -274,6 +274,10 @@ async def websocket_endpoint(
     citizen_data = session_data.get("citizen_data", {})
     system_instruction = _build_system_instruction(citizen_data)
 
+    # Pre-fetch UiPath token + folder + release key in the background
+    # so they are already cached when submit_to_municipality is called
+    asyncio.create_task(_maestro.warmup())
+
     audio_q: asyncio.Queue = asyncio.Queue()
     video_q: asyncio.Queue = asyncio.Queue()
     text_q: asyncio.Queue = asyncio.Queue()

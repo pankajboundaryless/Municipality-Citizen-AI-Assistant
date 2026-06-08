@@ -22,6 +22,7 @@ import base64
 import json
 import logging
 import os
+import time
 from typing import Any, Dict, List, Optional
 
 import aiohttp
@@ -59,10 +60,30 @@ class UiPathMaestroClient:
 
     def __init__(self, config: UiPathMaestroConfig) -> None:
         self.cfg = config
+        # Cached auth state — populated by warmup(), reused by submit()
+        self._token: Optional[str] = None
+        self._token_expiry: float = 0.0
+        self._folder_id: Optional[int] = None
+        self._release_key: Optional[str] = None
 
     # -------------------------------------------------------------------------
     # Public API
     # -------------------------------------------------------------------------
+
+    async def warmup(self) -> None:
+        """
+        Pre-fetch token, folder ID, and release key so submit() is instant.
+        Call this as a background task when a session opens.
+        """
+        if not self.cfg.is_configured:
+            return
+        try:
+            token = await self._get_token()
+            folder_id = await self._resolve_folder_id(token)
+            await self._resolve_release_key(token, folder_id)
+            logger.info("UiPath warmup complete: token + folder + release key cached")
+        except Exception as exc:
+            logger.warning(f"UiPath warmup failed (will retry on submit): {exc}")
 
     async def submit(
         self,
@@ -74,6 +95,7 @@ class UiPathMaestroClient:
         """
         Start a UiPath job and wait for completion.
         Returns the out_Reply string from the job output arguments.
+        Uses cached token/folder/release if warmup() already ran.
         """
         if not self.cfg.is_configured:
             logger.warning("UiPath Maestro not configured — returning placeholder.")
@@ -86,6 +108,7 @@ class UiPathMaestroClient:
         try:
             token = await self._get_token()
             folder_id = await self._resolve_folder_id(token)
+            release_key = await self._resolve_release_key(token, folder_id)
 
             docs_b64: List[str] = [
                 base64.b64encode(doc).decode()
@@ -100,7 +123,7 @@ class UiPathMaestroClient:
                 "in_Documents": json.dumps(docs_b64),
             }
 
-            job_id = await self._start_job(token, folder_id, input_args)
+            job_id = await self._start_job(token, folder_id, release_key, input_args)
             logger.info(f"UiPath job started: id={job_id}, session={session_id[:8]}, subject={subject}")
             return await self._poll_until_done(token, job_id)
 
@@ -117,19 +140,27 @@ class UiPathMaestroClient:
     # -------------------------------------------------------------------------
 
     async def _get_token(self) -> str:
+        if self._token and time.monotonic() < self._token_expiry:
+            return self._token
         payload = {
             "grant_type": "client_credentials",
             "client_id": self.cfg.client_id,
             "client_secret": self.cfg.client_secret,
-            "scope": "OR.Execution OR.Folders.Read",
+            "scope": "OR.Execution OR.Folders OR.Jobs OR.Robots.Read",
         }
         async with aiohttp.ClientSession() as s:
             async with s.post(self._TOKEN_URL, data=payload) as r:
                 if r.status != 200:
                     raise RuntimeError(f"UiPath auth error {r.status}: {await r.text()}")
-                return (await r.json())["access_token"]
+                data = await r.json()
+        self._token = data["access_token"]
+        # Expire 60 s before the actual TTL to avoid using a token that's about to die
+        self._token_expiry = time.monotonic() + data.get("expires_in", 3600) - 60
+        return self._token
 
     async def _resolve_folder_id(self, token: str) -> Optional[int]:
+        if self._folder_id is not None:
+            return self._folder_id
         url = (
             f"{self._CLOUD_BASE}/{self.cfg.organization}/{self.cfg.tenant}"
             "/orchestrator_/odata/Folders"
@@ -139,22 +170,62 @@ class UiPathMaestroClient:
             "$select": "Id,DisplayName",
         }
         headers = {"Authorization": f"Bearer {token}"}
-        try:
+        async with aiohttp.ClientSession() as s:
+            async with s.get(url, headers=headers, params=params) as r:
+                if r.status != 200:
+                    logger.warning(f"Folder lookup HTTP {r.status}: {await r.text()}")
+                    return None
+                items = (await r.json()).get("value", [])
+                if not items:
+                    logger.warning(f"Folder '{self.cfg.folder_name}' not found")
+                    return None
+        self._folder_id = items[0]["Id"]
+        logger.info(f"Folder resolved: {items[0]['DisplayName']} → id={self._folder_id}")
+        return self._folder_id
+
+    async def _resolve_release_key(
+        self,
+        token: str,
+        folder_id: Optional[int],
+    ) -> Optional[str]:
+        if self._release_key is not None:
+            return self._release_key
+        url = (
+            f"{self._CLOUD_BASE}/{self.cfg.organization}/{self.cfg.tenant}"
+            "/orchestrator_/odata/Releases"
+        )
+        headers: Dict[str, str] = {"Authorization": f"Bearer {token}"}
+        if folder_id is not None:
+            headers["X-UIPATH-OrganizationUnitId"] = str(folder_id)
+        for field in ("ProcessKey", "Name"):
+            params = {
+                "$filter": f"{field} eq '{self.cfg.process_key}'",
+                "$select": "Key,Name,ProcessKey",
+                "$top": "1",
+            }
             async with aiohttp.ClientSession() as s:
                 async with s.get(url, headers=headers, params=params) as r:
                     if r.status != 200:
-                        logger.warning(f"Folder lookup HTTP {r.status}")
-                        return None
+                        logger.warning(f"Release lookup by {field} HTTP {r.status}")
+                        continue
                     items = (await r.json()).get("value", [])
-                    return items[0]["Id"] if items else None
-        except Exception as exc:
-            logger.warning(f"Folder lookup failed: {exc}")
-            return None
+                    if items:
+                        self._release_key = items[0]["Key"]
+                        logger.info(
+                            f"Release resolved by {field}: name={items[0]['Name']}, "
+                            f"key={self._release_key}"
+                        )
+                        return self._release_key
+        logger.warning(
+            f"No release found for '{self.cfg.process_key}' — will use ProcessKey in StartJobs"
+        )
+        return None
 
     async def _start_job(
         self,
         token: str,
         folder_id: Optional[int],
+        release_key: Optional[str],
         input_args: Dict[str, Any],
     ) -> int:
         url = (
@@ -168,13 +239,17 @@ class UiPathMaestroClient:
         if folder_id is not None:
             headers["X-UIPATH-OrganizationUnitId"] = str(folder_id)
 
-        body = {
-            "startInfo": {
-                "ProcessKey": self.cfg.process_key,
-                "Strategy": "All",
-                "InputArguments": json.dumps(input_args),
-            }
+        start_info: Dict[str, Any] = {
+            "Strategy": "ModernJobsCount",
+            "JobsCount": 1,
+            "InputArguments": json.dumps(input_args),
         }
+        if release_key:
+            start_info["ReleaseKey"] = release_key
+        else:
+            start_info["ProcessKey"] = self.cfg.process_key
+
+        body = {"startInfo": start_info}
         async with aiohttp.ClientSession() as s:
             async with s.post(url, json=body, headers=headers) as r:
                 if r.status not in (200, 201):

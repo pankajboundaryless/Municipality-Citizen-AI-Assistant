@@ -49,6 +49,7 @@ let selectedService   = '';
 let detectedLanguage  = 'en';  // BCP-47 code from navigator.languages
 let currentGeminiDiv  = null;
 let currentUserDiv    = null;
+let processingNotice  = null;  // reference to the active "Processing…" notice
 const localFiles      = [];   // {name, size} tracking for UI
 
 // ── Service Card Selection ────────────────────────────────────
@@ -145,6 +146,7 @@ function handleJsonMessage(msg) {
       break;
 
     case 'gemini':
+      removeProcessingNotice();
       if (assistantStatus) assistantStatus.textContent = 'Responding...';
       if (currentGeminiDiv) {
         currentGeminiDiv.querySelector('.message-text').textContent += msg.text;
@@ -154,10 +156,14 @@ function handleJsonMessage(msg) {
       }
       break;
 
-    case 'tool_call':
+    case 'tool_start':
       currentGeminiDiv = null;
       if (assistantStatus) assistantStatus.textContent = 'Processing request...';
-      appendProcessingNotice();
+      processingNotice = appendProcessingNotice();
+      break;
+
+    case 'tool_call':
+      removeProcessingNotice();
       break;
 
     case 'error':
@@ -222,8 +228,14 @@ function appendProcessingNotice() {
     </div>`;
   chatLog.appendChild(div);
   scrollChat();
-  // Auto-remove after 30 seconds in case the tool result arrives without a new message
-  setTimeout(() => { if (div.parentNode) div.remove(); }, 30000);
+  return div;
+}
+
+function removeProcessingNotice() {
+  if (processingNotice && processingNotice.parentNode) {
+    processingNotice.remove();
+  }
+  processingNotice = null;
 }
 
 function scrollChat() {
