@@ -1,0 +1,622 @@
+// ── Utilities ────────────────────────────────────────────────
+function generateUUID() {
+  return ([1e7] + -1e3 + -4e3 + -8e3 + -1e11).replace(/[018]/g, (c) =>
+    (c ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (c / 4)))).toString(16)
+  );
+}
+
+function formatBytes(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+function getFileExt(filename) {
+  return (filename.split('.').pop() || 'FILE').toUpperCase().slice(0, 4);
+}
+
+// ── DOM References ────────────────────────────────────────────
+const authSection       = document.getElementById('auth-section');
+const appSection        = document.getElementById('app-section');
+const sessionEndSection = document.getElementById('session-end-section');
+const connectBtn        = document.getElementById('connectBtn');
+const restartBtn        = document.getElementById('restartBtn');
+const micBtn            = document.getElementById('micBtn');
+const cameraBtn         = document.getElementById('cameraBtn');
+const captureBtn        = document.getElementById('captureBtn');
+const screenBtn         = document.getElementById('screenBtn');
+const disconnectBtn     = document.getElementById('disconnectBtn');
+const textInput         = document.getElementById('textInput');
+const sendBtn           = document.getElementById('sendBtn');
+const chatLog           = document.getElementById('chat-log');
+const fileInput         = document.getElementById('fileInput');
+const uploadArea        = document.getElementById('upload-area');
+const uploadedFilesEl   = document.getElementById('uploaded-files');
+const assistantStatus   = document.getElementById('assistant-status');
+const videoCard         = document.getElementById('video-card');
+const videoPreview      = document.getElementById('video-preview');
+const videoLabel        = document.getElementById('video-label');
+
+const citizenNameEl  = document.getElementById('citizenName');
+const citizenIdEl    = document.getElementById('citizenId');
+const citizenEmailEl = document.getElementById('citizenEmail');
+const citizenPhoneEl = document.getElementById('citizenPhone');
+const serviceCards   = document.querySelectorAll('.service-card');
+
+// ── State ─────────────────────────────────────────────────────
+let currentSessionId  = null;
+let selectedService   = '';
+let detectedLanguage  = 'en';  // BCP-47 code from navigator.languages
+let currentGeminiDiv  = null;
+let currentUserDiv    = null;
+const localFiles      = [];   // {name, size} tracking for UI
+
+// ── Service Card Selection ────────────────────────────────────
+serviceCards.forEach((card) => {
+  card.addEventListener('click', () => {
+    serviceCards.forEach((c) => {
+      c.classList.remove('selected');
+      c.setAttribute('aria-pressed', 'false');
+    });
+    card.classList.add('selected');
+    card.setAttribute('aria-pressed', 'true');
+    selectedService = card.dataset.service;
+    validateForm();
+  });
+});
+
+// ── Form Validation ───────────────────────────────────────────
+function validateForm() {
+  connectBtn.disabled = citizenNameEl.value.trim().length === 0;
+}
+
+citizenNameEl.addEventListener('input', validateForm);
+
+// ── Media + WebSocket ─────────────────────────────────────────
+const mediaHandler = new MediaHandler();
+
+const geminiClient = new GeminiClient({
+  onOpen: () => {
+    setStatus('connected', 'Connected');
+    authSection.classList.add('hidden');
+    appSection.classList.remove('hidden');
+    populateSidebar();
+
+    const name    = citizenNameEl.value.trim() || 'Citizen';
+    const service = selectedService || 'general inquiry';
+    geminiClient.sendText(
+      `System: The citizen ${name} has just connected. Their requested service is: ${service}. ` +
+      `Their preferred language (detected from browser) is: ${detectedLanguage}. ` +
+      `Respond in this language throughout the session (switch naturally if they use another). ` +
+      `Greet them warmly by first name, briefly confirm you can assist with their ${service} enquiry, ` +
+      `and ask one focused opening question to understand their specific need. Keep the greeting under 3 sentences.`
+    );
+  },
+
+  onMessage: (event) => {
+    if (typeof event.data === 'string') {
+      try { handleJsonMessage(JSON.parse(event.data)); }
+      catch (e) { console.error('Parse error:', e); }
+    } else {
+      mediaHandler.playAudio(event.data);
+    }
+  },
+
+  onClose: () => {
+    setStatus('disconnected', 'Not Connected');
+    showSessionEnd();
+  },
+
+  onError: () => {
+    setStatus('error', 'Connection Error');
+  },
+});
+
+// ── Status ────────────────────────────────────────────────────
+function setStatus(state, label) {
+  const badge = document.getElementById('status');
+  badge.className = `status-badge ${state}`;
+  badge.querySelector('.status-text').textContent = label;
+}
+
+// ── Message Handling ──────────────────────────────────────────
+function handleJsonMessage(msg) {
+  switch (msg.type) {
+    case 'interrupted':
+      mediaHandler.stopAudioPlayback();
+      currentGeminiDiv = null;
+      currentUserDiv   = null;
+      if (assistantStatus) assistantStatus.textContent = 'Ready to assist';
+      break;
+
+    case 'turn_complete':
+      currentGeminiDiv = null;
+      currentUserDiv   = null;
+      if (assistantStatus) assistantStatus.textContent = 'Ready to assist';
+      break;
+
+    case 'user':
+      if (currentUserDiv) {
+        currentUserDiv.querySelector('.message-text').textContent += msg.text;
+        scrollChat();
+      } else {
+        currentUserDiv = appendMessage('user', msg.text, { voice: true });
+      }
+      break;
+
+    case 'gemini':
+      if (assistantStatus) assistantStatus.textContent = 'Responding...';
+      if (currentGeminiDiv) {
+        currentGeminiDiv.querySelector('.message-text').textContent += msg.text;
+        scrollChat();
+      } else {
+        currentGeminiDiv = appendMessage('assistant', msg.text);
+      }
+      break;
+
+    case 'tool_call':
+      currentGeminiDiv = null;
+      if (assistantStatus) assistantStatus.textContent = 'Processing request...';
+      appendProcessingNotice();
+      break;
+
+    case 'error':
+      appendSystemMsg('An error occurred: ' + (msg.error || 'Unknown error.'));
+      break;
+  }
+}
+
+function appendMessage(type, text, opts = {}) {
+  const wrapper = document.createElement('div');
+  wrapper.className = `message-wrapper ${type}`;
+
+  const bubble = document.createElement('div');
+  bubble.className = `message-bubble ${type}`;
+
+  const span = document.createElement('span');
+  span.className = 'message-text';
+  span.textContent = text;
+
+  bubble.appendChild(span);
+
+  if (opts.voice) {
+    const voiceLabel = document.createElement('span');
+    voiceLabel.className = 'message-voice-label';
+    voiceLabel.setAttribute('aria-label', 'Voice input — transcribed automatically');
+    voiceLabel.innerHTML =
+      '<svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">' +
+        '<rect x="3" y="1" width="4" height="5" rx="2" stroke="currentColor" stroke-width="1.1"/>' +
+        '<path d="M1.5 5.5c0 1.93 1.57 3.5 3.5 3.5s3.5-1.57 3.5-3.5" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/>' +
+        '<path d="M5 9v1" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/>' +
+      '</svg>' +
+      ' Transcribed — may not be verbatim';
+    bubble.appendChild(voiceLabel);
+  }
+
+  const time = document.createElement('span');
+  time.className = 'message-time';
+  time.textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+  bubble.appendChild(time);
+  wrapper.appendChild(bubble);
+  chatLog.appendChild(wrapper);
+  scrollChat();
+  return wrapper;
+}
+
+function appendSystemMsg(text) {
+  const div = document.createElement('div');
+  div.className = 'message-system';
+  div.textContent = text;
+  chatLog.appendChild(div);
+  scrollChat();
+}
+
+function appendProcessingNotice() {
+  const div = document.createElement('div');
+  div.className = 'message-processing';
+  div.innerHTML = `
+    <span>Processing with municipal system</span>
+    <div class="dot-flashing" aria-hidden="true">
+      <span></span><span></span><span></span>
+    </div>`;
+  chatLog.appendChild(div);
+  scrollChat();
+  // Auto-remove after 30 seconds in case the tool result arrives without a new message
+  setTimeout(() => { if (div.parentNode) div.remove(); }, 30000);
+}
+
+function scrollChat() {
+  chatLog.scrollTop = chatLog.scrollHeight;
+}
+
+// ── Sidebar Population ────────────────────────────────────────
+function populateSidebar() {
+  const name = citizenNameEl.value.trim();
+  const initials = name.split(' ').map((n) => n[0]).join('').toUpperCase().slice(0, 2) || '?';
+
+  document.getElementById('citizen-initials').textContent       = initials;
+  document.getElementById('citizen-name-display').textContent   = name || '—';
+  document.getElementById('service-badge').textContent          = selectedService || 'General Inquiry';
+  document.getElementById('display-id').textContent             = citizenIdEl.value.trim() || '—';
+  document.getElementById('display-email').textContent          = citizenEmailEl.value.trim() || '—';
+  document.getElementById('display-phone').textContent          = citizenPhoneEl.value.trim() || '—';
+  document.getElementById('display-session').textContent        = currentSessionId
+    ? currentSessionId.slice(0, 8) + '…'
+    : '—';
+
+  document.getElementById('reference-number').textContent = currentSessionId || '—';
+}
+
+// ── Connect ───────────────────────────────────────────────────
+connectBtn.addEventListener('click', async () => {
+  if (!citizenNameEl.value.trim()) return;
+
+  connectBtn.disabled = true;
+  connectBtn.textContent = 'Connecting…';
+  setStatus('connecting', 'Connecting…');
+
+  try {
+    currentSessionId = generateUUID();
+
+    detectedLanguage = navigator.languages?.[0] || navigator.language || 'en';
+    const citizenData = {
+      name:              citizenNameEl.value.trim(),
+      idNumber:          citizenIdEl.value.trim(),
+      email:             citizenEmailEl.value.trim(),
+      phone:             citizenPhoneEl.value.trim(),
+      selectedService:   selectedService || 'General Inquiry',
+      preferredLanguage: detectedLanguage,
+    };
+
+    const res = await fetch('/session/init', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId: currentSessionId, citizenData }),
+    });
+
+    if (!res.ok) throw new Error('Session initialisation failed');
+
+    await mediaHandler.initializeAudio();
+    geminiClient.connect(currentSessionId);
+
+  } catch (err) {
+    console.error('Connection error:', err);
+    setStatus('error', 'Connection Failed');
+    connectBtn.disabled = false;
+    connectBtn.textContent = 'Start Session';
+    alert('Could not start session: ' + err.message);
+  }
+});
+
+// ── Disconnect ────────────────────────────────────────────────
+disconnectBtn.addEventListener('click', () => {
+  geminiClient.disconnect();
+});
+
+// ── Mic Toggle ────────────────────────────────────────────────
+micBtn.addEventListener('click', async () => {
+  const label = micBtn.querySelector('.mic-label');
+
+  if (mediaHandler.isRecording) {
+    mediaHandler.stopAudio();
+    label.textContent = 'Start Microphone';
+    micBtn.setAttribute('aria-pressed', 'false');
+    micBtn.classList.remove('active');
+  } else {
+    try {
+      await mediaHandler.startAudio((data) => {
+        if (geminiClient.isConnected()) geminiClient.send(data);
+      });
+      label.textContent = 'Stop Microphone';
+      micBtn.setAttribute('aria-pressed', 'true');
+      micBtn.classList.add('active');
+    } catch {
+      alert('Could not access the microphone. Please check your browser permissions.');
+    }
+  }
+});
+
+// ── Camera Toggle ─────────────────────────────────────────────
+cameraBtn.addEventListener('click', async () => {
+  const label = cameraBtn.querySelector('.camera-label');
+
+  if (cameraBtn.getAttribute('aria-pressed') === 'true') {
+    mediaHandler.stopVideo(videoPreview);
+    videoCard.classList.add('hidden');
+    captureBtn.classList.add('hidden');
+    cameraBtn.setAttribute('aria-pressed', 'false');
+    cameraBtn.classList.remove('active');
+    label.textContent = 'Start Camera';
+  } else {
+    // Stop screen share first if active
+    if (screenBtn.getAttribute('aria-pressed') === 'true') {
+      mediaHandler.stopVideo(videoPreview);
+      screenBtn.setAttribute('aria-pressed', 'false');
+      screenBtn.classList.remove('active');
+      screenBtn.querySelector('.screen-label').textContent = 'Share Screen';
+    }
+    try {
+      await mediaHandler.startVideo(videoPreview, (base64Data) => {
+        if (geminiClient.isConnected()) geminiClient.sendImage(base64Data);
+      });
+      videoLabel.textContent = 'Camera';
+      videoCard.classList.remove('hidden');
+      captureBtn.classList.remove('hidden');
+      cameraBtn.setAttribute('aria-pressed', 'true');
+      cameraBtn.classList.add('active');
+      label.textContent = 'Stop Camera';
+    } catch {
+      alert('Could not access the camera. Please check your browser permissions.');
+    }
+  }
+});
+
+// ── Screen Share Toggle ───────────────────────────────────────
+screenBtn.addEventListener('click', async () => {
+  const label = screenBtn.querySelector('.screen-label');
+
+  if (screenBtn.getAttribute('aria-pressed') === 'true') {
+    mediaHandler.stopVideo(videoPreview);
+    videoCard.classList.add('hidden');
+    screenBtn.setAttribute('aria-pressed', 'false');
+    screenBtn.classList.remove('active');
+    label.textContent = 'Share Screen';
+  } else {
+    // Stop camera first if active
+    if (cameraBtn.getAttribute('aria-pressed') === 'true') {
+      mediaHandler.stopVideo(videoPreview);
+      cameraBtn.setAttribute('aria-pressed', 'false');
+      cameraBtn.classList.remove('active');
+      cameraBtn.querySelector('.camera-label').textContent = 'Start Camera';
+    }
+    try {
+      await mediaHandler.startScreen(
+        videoPreview,
+        (base64Data) => {
+          if (geminiClient.isConnected()) geminiClient.sendImage(base64Data);
+        },
+        () => {
+          // User stopped sharing via browser UI
+          videoCard.classList.add('hidden');
+          screenBtn.setAttribute('aria-pressed', 'false');
+          screenBtn.classList.remove('active');
+          label.textContent = 'Share Screen';
+        }
+      );
+      videoLabel.textContent = 'Screen';
+      videoCard.classList.remove('hidden');
+      screenBtn.setAttribute('aria-pressed', 'true');
+      screenBtn.classList.add('active');
+      label.textContent = 'Stop Sharing';
+    } catch {
+      alert('Could not start screen sharing. Please check your browser permissions.');
+    }
+  }
+});
+
+// ── Capture Photo ─────────────────────────────────────────────
+captureBtn.addEventListener('click', () => {
+  if (!videoPreview.videoWidth || !geminiClient.isConnected()) return;
+
+  // Draw the current video frame to an off-screen canvas
+  const canvas = document.createElement('canvas');
+  canvas.width  = videoPreview.videoWidth;
+  canvas.height = videoPreview.videoHeight;
+  canvas.getContext('2d').drawImage(videoPreview, 0, 0);
+
+  const ts       = new Date().toTimeString().slice(0, 8).replace(/:/g, '');
+  const filename = `captured_photo_${ts}.jpg`;
+  const dataUrl  = canvas.toDataURL('image/jpeg', 0.92);
+  const base64   = dataUrl.split(',')[1];
+
+  // Send to backend for storage
+  geminiClient.send(JSON.stringify({ type: 'capture_photo', data: base64, filename }));
+
+  // Add to the local file list so the citizen can see it
+  const approxBytes = Math.round(base64.length * 0.75);
+  localFiles.push({ name: filename, size: approxBytes, captured: true });
+  renderFileList();
+
+  // Visual feedback: white flash on the video preview
+  const wrapper = videoPreview.parentElement;
+  wrapper.classList.add('capture-flash');
+  wrapper.addEventListener('animationend', () => wrapper.classList.remove('capture-flash'), { once: true });
+
+  appendSystemMsg(`Photo captured: ${filename}`);
+});
+
+// ── Text Chat ─────────────────────────────────────────────────
+sendBtn.addEventListener('click', sendText);
+textInput.addEventListener('keypress', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendText();
+  }
+});
+
+function sendText() {
+  const text = textInput.value.trim();
+  if (!text || !geminiClient.isConnected()) return;
+  geminiClient.sendText(text);
+  appendMessage('user', text);
+  textInput.value = '';
+}
+
+// ── Document Upload ───────────────────────────────────────────
+uploadArea.addEventListener('click', () => fileInput.click());
+
+uploadArea.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' || e.key === ' ') {
+    e.preventDefault();
+    fileInput.click();
+  }
+});
+
+uploadArea.addEventListener('dragover', (e) => {
+  e.preventDefault();
+  uploadArea.classList.add('drag-over');
+});
+
+uploadArea.addEventListener('dragleave', () => {
+  uploadArea.classList.remove('drag-over');
+});
+
+uploadArea.addEventListener('drop', (e) => {
+  e.preventDefault();
+  uploadArea.classList.remove('drag-over');
+  processFiles(e.dataTransfer.files);
+});
+
+fileInput.addEventListener('change', () => {
+  processFiles(fileInput.files);
+  fileInput.value = '';
+});
+
+async function processFiles(files) {
+  for (const file of Array.from(files)) {
+    if (file.size > 10 * 1024 * 1024) {
+      appendSystemMsg(`"${file.name}" exceeds the 10 MB limit and was not uploaded.`);
+      continue;
+    }
+    await uploadFile(file);
+  }
+}
+
+async function uploadFile(file) {
+  const form = new FormData();
+  form.append('sessionId', currentSessionId);
+  form.append('file', file);
+
+  try {
+    const res = await fetch('/upload-document', { method: 'POST', body: form });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error(err.error || res.statusText);
+    }
+
+    localFiles.push({ name: file.name, size: file.size });
+    renderFileList();
+
+    // Notify the AI about the new document
+    if (geminiClient.isConnected()) {
+      geminiClient.send(
+        JSON.stringify({ type: 'document_notify', filename: file.name, contentType: file.type })
+      );
+    }
+
+    appendSystemMsg(`Document attached: ${file.name}`);
+  } catch (err) {
+    appendSystemMsg(`Failed to upload "${file.name}": ${err.message}`);
+  }
+}
+
+function renderFileList() {
+  uploadedFilesEl.innerHTML = '';
+  localFiles.forEach((f, idx) => {
+    const item = document.createElement('div');
+    item.className = 'file-item';
+    item.setAttribute('role', 'listitem');
+
+    const ext = document.createElement('span');
+    ext.className = f.captured ? 'file-ext file-ext-capture' : 'file-ext';
+    ext.textContent = f.captured ? 'CAM' : getFileExt(f.name);
+
+    const info = document.createElement('div');
+    info.className = 'file-info';
+
+    const name = document.createElement('span');
+    name.className = 'file-name';
+    name.textContent = f.name;
+
+    const size = document.createElement('span');
+    size.className = 'file-size';
+    size.textContent = formatBytes(f.size);
+
+    info.append(name, size);
+
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'file-delete';
+    del.textContent = '×';
+    del.setAttribute('aria-label', `Remove ${f.name}`);
+    del.addEventListener('click', () => removeFile(idx, f.name));
+
+    item.append(ext, info, del);
+    uploadedFilesEl.appendChild(item);
+  });
+}
+
+async function removeFile(idx, filename) {
+  localFiles.splice(idx, 1);
+  renderFileList();
+
+  if (currentSessionId) {
+    await fetch(
+      `/upload-document?sessionId=${encodeURIComponent(currentSessionId)}&filename=${encodeURIComponent(filename)}`,
+      { method: 'DELETE' }
+    );
+  }
+}
+
+// ── Video teardown helper ─────────────────────────────────────
+function stopAllVideo() {
+  if (mediaHandler.videoStream) {
+    mediaHandler.stopVideo(videoPreview);
+    videoCard.classList.add('hidden');
+  }
+  captureBtn.classList.add('hidden');
+  cameraBtn.setAttribute('aria-pressed', 'false');
+  cameraBtn.classList.remove('active');
+  cameraBtn.querySelector('.camera-label').textContent = 'Start Camera';
+  screenBtn.setAttribute('aria-pressed', 'false');
+  screenBtn.classList.remove('active');
+  screenBtn.querySelector('.screen-label').textContent = 'Share Screen';
+}
+
+// ── Session End / Reset ───────────────────────────────────────
+function showSessionEnd() {
+  appSection.classList.add('hidden');
+  sessionEndSection.classList.remove('hidden');
+  mediaHandler.stopAudio();
+  stopAllVideo();
+
+  const label = micBtn.querySelector('.mic-label');
+  if (label) label.textContent = 'Start Microphone';
+  micBtn.setAttribute('aria-pressed', 'false');
+  micBtn.classList.remove('active');
+}
+
+function resetUI() {
+  authSection.classList.remove('hidden');
+  appSection.classList.add('hidden');
+  sessionEndSection.classList.add('hidden');
+
+  mediaHandler.stopAudio();
+  stopAllVideo();
+
+  chatLog.innerHTML = '';
+  localFiles.length = 0;
+  renderFileList();
+
+  currentSessionId = null;
+  selectedService  = '';
+  currentGeminiDiv = null;
+  currentUserDiv   = null;
+
+  serviceCards.forEach((c) => {
+    c.classList.remove('selected');
+    c.setAttribute('aria-pressed', 'false');
+  });
+
+  citizenNameEl.value  = '';
+  citizenIdEl.value    = '';
+  citizenEmailEl.value = '';
+  citizenPhoneEl.value = '';
+
+  connectBtn.disabled    = true;
+  connectBtn.textContent = 'Start Session';
+  setStatus('disconnected', 'Not Connected');
+}
+
+restartBtn.addEventListener('click', resetUI);

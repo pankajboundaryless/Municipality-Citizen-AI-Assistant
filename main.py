@@ -1,0 +1,446 @@
+import asyncio
+import base64
+import json
+import logging
+import os
+import pathlib
+import re
+import uuid
+
+from dotenv import load_dotenv
+from fastapi import FastAPI, File, Form, Query, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
+
+from gemini_live import GeminiLive
+from twilio_handler import TwilioHandler
+from uipath_maestro import UiPathMaestroClient, UiPathMaestroConfig
+
+load_dotenv()
+
+logging.basicConfig(level=logging.INFO)
+logging.getLogger("gemini_live").setLevel(logging.DEBUG)
+logging.getLogger(__name__).setLevel(logging.DEBUG)
+logger = logging.getLogger(__name__)
+
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+MODEL = os.getenv("MODEL", "gemini-3.1-flash-live-preview")
+TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
+TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
+TWILIO_APP_HOST = os.getenv("TWILIO_APP_HOST")
+
+app = FastAPI(title="Municipality Citizen AI Assistant")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.mount("/static", StaticFiles(directory="frontend"), name="static")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Service requirements loader
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _parse_service_requirements() -> dict[str, str]:
+    """
+    Parse service_requirements.md into a dict keyed by service name.
+    Each value is the full markdown section for that service.
+    Returns an empty dict if the file is missing.
+    """
+    req_file = pathlib.Path(__file__).parent / "service_requirements.md"
+    if not req_file.exists():
+        logger.warning("service_requirements.md not found — skipping data requirements injection")
+        return {}
+
+    text = req_file.read_text(encoding="utf-8")
+    sections: dict[str, str] = {}
+
+    # Split on level-2 headings (## ...) — each chunk is one service section
+    parts = re.split(r"\n(?=## )", text)
+    for part in parts:
+        match = re.match(r"## (.+)", part.strip())
+        if match:
+            service_name = match.group(1).strip()
+            sections[service_name] = part.strip()
+
+    logger.info(f"Loaded service requirements for: {list(sections.keys())}")
+    return sections
+
+
+_SERVICE_REQUIREMENTS: dict[str, str] = _parse_service_requirements()
+
+
+def _get_requirements(service: str) -> str:
+    """Return the requirements section for the given service, or a generic note."""
+    if not service or service == "General Inquiry":
+        return ""
+    # Exact match first, then case-insensitive prefix match
+    if service in _SERVICE_REQUIREMENTS:
+        return _SERVICE_REQUIREMENTS[service]
+    for key in _SERVICE_REQUIREMENTS:
+        if key.lower().startswith(service.lower().split()[0]):
+            return _SERVICE_REQUIREMENTS[key]
+    return ""
+
+
+# Per-session store: session_id -> {"citizen_data": {}, "documents": [...]}
+_sessions: dict = {}
+
+_maestro = UiPathMaestroClient(UiPathMaestroConfig())
+
+# Tool definition as a plain dict — widely compatible with google-genai SDK versions
+_SUBMIT_TOOL = {
+    "function_declarations": [
+        {
+            "name": "submit_to_municipality",
+            "description": (
+                "Submit the citizen's completed request to the municipal processing system. "
+                "Call this ONLY when all required information has been collected and the citizen "
+                "explicitly confirms they want to proceed with the submission. "
+                "The system returns a reference number or status message for the citizen."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "subject": {
+                        "type": "string",
+                        "description": (
+                            "The service category being requested "
+                            "(e.g. 'Passport Renewal', 'Construction Permit Application', 'ID Card Replacement')."
+                        ),
+                    },
+                    "summary": {
+                        "type": "string",
+                        "description": (
+                            "Concise but complete summary of the citizen's specific request "
+                            "and all key details collected during the conversation."
+                        ),
+                    },
+                },
+                "required": ["subject", "summary"],
+            },
+        }
+    ]
+}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# System instruction builder
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _build_system_instruction(citizen: dict) -> str:
+    name = citizen.get("name") or "Citizen"
+    id_num = citizen.get("idNumber") or "not provided"
+    email = citizen.get("email") or "not provided"
+    phone = citizen.get("phone") or "not provided"
+    service = citizen.get("selectedService") or "General Inquiry"
+    lang_code = citizen.get("preferredLanguage") or "en"
+
+    requirements_section = _get_requirements(service)
+    requirements_block = (
+        f"\n\n## Data Requirements for '{service}'\n\n"
+        f"{requirements_section}\n\n"
+        "Use the table above as your checklist. Work through the fields conversationally — "
+        "do not read out the table literally. Ask one or two questions at a time to avoid "
+        "overwhelming the citizen. If they cannot provide a field, note it as missing and continue.\n"
+        "IMPORTANT: Even if some fields are missing, you MUST still call submit_to_municipality "
+        "once the citizen confirms they want to proceed. The Maestro process handles incomplete "
+        "data and will return a status such as 'OK', 'Data incomplete — pending review', or "
+        "'Required data missing'. Relay that status clearly to the citizen."
+    ) if requirements_section else ""
+
+    return (
+        "You are a professional and courteous AI assistant for the Municipality Citizen Services office. "
+        "Your role is to assist citizens with inquiries and applications for:\n"
+        "  - Identity Documents (ID cards): new applications, renewals, replacements\n"
+        "  - Passports: new applications, renewals, emergency travel documents\n"
+        "  - Work Permits: application requirements, procedures, document checklists\n"
+        "  - Construction Permits: zoning inquiries, application procedures, inspection stages\n\n"
+        "Communication guidelines:\n"
+        "  - Be professional, patient, and empathetic.\n"
+        "  - Use plain language — avoid bureaucratic jargon.\n"
+        "  - Ask one or two questions at a time — never overwhelm the citizen with a long list.\n"
+        "  - Address the citizen by first name when possible.\n"
+        "  - Always read back a concise summary of collected data before submitting.\n\n"
+        f"Current session information:\n"
+        f"  Citizen name:      {name}\n"
+        f"  Document number:   {id_num}\n"
+        f"  Email:             {email}\n"
+        f"  Phone:             {phone}\n"
+        f"  Requested service: {service}\n"
+        f"  Preferred language: {lang_code}\n\n"
+        f"Language: Your primary response language for this session is the one identified by "
+        f"BCP-47 code '{lang_code}'. Always respond in that language. "
+        "If the citizen writes or speaks in a different language during the conversation, "
+        "switch to it naturally — always follow the language the citizen is actively using. "
+        "You can also see the citizen's camera feed or a shared screen when they enable those features.\n\n"
+        "Workflow:\n"
+        "1. Greet the citizen warmly by name and confirm you can help with their selected service.\n"
+        "2. Use the data requirements checklist below to guide the conversation — collect fields "
+        "conversationally, not as a rigid form.\n"
+        "3. If the citizen says they do not have a field, note it as 'not provided' and move on.\n"
+        "4. When you have collected as much information as the citizen can provide, read back "
+        "a brief summary and ask for confirmation to proceed.\n"
+        "5. If documents were uploaded, acknowledge them by name and confirm their purpose.\n"
+        "6. If the citizen shares their camera or screen, describe what you observe if relevant.\n"
+        "7. On citizen confirmation, call submit_to_municipality. Do NOT wait for every field — "
+        "partial data is acceptable; Maestro handles validation.\n"
+        "8. Relay the Maestro response (reference number, status, or next steps) clearly.\n\n"
+        "Handle personal data with discretion. If you cannot answer a specific procedural "
+        "question, direct the citizen to the relevant municipal department or advise an in-person visit."
+        f"{requirements_block}"
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# REST Endpoints
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/")
+async def root():
+    return FileResponse("frontend/index.html")
+
+
+@app.post("/session/init")
+async def session_init(data: dict):
+    """Create or refresh a citizen session with profile data before the WebSocket connects."""
+    session_id = data.get("sessionId") or str(uuid.uuid4())
+    existing_docs = _sessions.get(session_id, {}).get("documents", [])
+    _sessions[session_id] = {
+        "citizen_data": data.get("citizenData", {}),
+        "documents": existing_docs,
+    }
+    logger.info(f"Session initialised: {session_id[:8]}…")
+    return {"sessionId": session_id, "status": "ok"}
+
+
+@app.post("/upload-document")
+async def upload_document(
+    sessionId: str = Form(...),
+    file: UploadFile = File(...),
+):
+    """Attach an uploaded document to an active citizen session."""
+    if sessionId not in _sessions:
+        _sessions[sessionId] = {"citizen_data": {}, "documents": []}
+
+    MAX_BYTES = 10 * 1024 * 1024  # 10 MB hard limit
+    content = await file.read(MAX_BYTES + 1)
+    if len(content) > MAX_BYTES:
+        return JSONResponse(status_code=413, content={"error": "File exceeds the 10 MB limit."})
+
+    _sessions[sessionId]["documents"].append({
+        "filename": file.filename,
+        "content_type": file.content_type or "application/octet-stream",
+        "data": content,
+    })
+    logger.info(f"Document saved: session={sessionId[:8]}, file={file.filename}, size={len(content)}")
+    return {"status": "ok", "filename": file.filename, "size": len(content)}
+
+
+@app.delete("/upload-document")
+async def delete_document(sessionId: str, filename: str):
+    """Remove a specific document from a session."""
+    if sessionId in _sessions:
+        _sessions[sessionId]["documents"] = [
+            d for d in _sessions[sessionId]["documents"]
+            if d["filename"] != filename
+        ]
+    return {"status": "ok"}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WebSocket — Main AI session
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.websocket("/ws")
+async def websocket_endpoint(
+    websocket: WebSocket,
+    session_id: str = Query(default=None),
+):
+    """Primary WebSocket endpoint for the Municipality AI Assistant."""
+    await websocket.accept()
+    logger.info(f"WebSocket accepted: session={session_id}")
+
+    if not session_id or session_id not in _sessions:
+        session_id = session_id or str(uuid.uuid4())
+        _sessions[session_id] = {"citizen_data": {}, "documents": []}
+
+    session_data = _sessions[session_id]
+    citizen_data = session_data.get("citizen_data", {})
+    system_instruction = _build_system_instruction(citizen_data)
+
+    audio_q: asyncio.Queue = asyncio.Queue()
+    video_q: asyncio.Queue = asyncio.Queue()
+    text_q: asyncio.Queue = asyncio.Queue()
+
+    async def on_audio_out(data: bytes) -> None:
+        await websocket.send_bytes(data)
+
+    async def handle_submit(subject: str, summary: str) -> str:
+        """Tool handler: forwards citizen request to UiPath Maestro."""
+        # Uploaded documents (raw bytes)
+        docs: list[bytes] = [d["data"] for d in session_data.get("documents", [])]
+        # Captured camera photos (base64 → bytes)
+        for img in session_data.get("captured_images", []):
+            try:
+                docs.append(base64.b64decode(img["data_b64"]))
+            except Exception as exc:
+                logger.warning(f"Could not decode captured image '{img.get('filename')}': {exc}")
+        enriched = {
+            **citizen_data,
+            "requestSummary": summary,
+            "capturedPhotoCount": len(session_data.get("captured_images", [])),
+        }
+        return await _maestro.submit(
+            session_id=session_id,
+            subject=subject,
+            citizen_data=enriched,
+            documents=docs or None,
+        )
+
+    gemini = GeminiLive(
+        api_key=GEMINI_API_KEY,
+        model=MODEL,
+        input_sample_rate=16000,
+        system_instruction=system_instruction,
+        tools=[_SUBMIT_TOOL],
+        tool_mapping={"submit_to_municipality": handle_submit},
+    )
+
+    async def receive_from_client() -> None:
+        try:
+            while True:
+                msg = await websocket.receive()
+                if msg.get("bytes"):
+                    await audio_q.put(msg["bytes"])
+                elif msg.get("text"):
+                    try:
+                        payload = json.loads(msg["text"])
+                        if isinstance(payload, dict):
+                            if payload.get("type") == "image":
+                                await video_q.put(base64.b64decode(payload["data"]))
+                                continue
+                            if payload.get("type") == "document_notify":
+                                fname = payload.get("filename", "a document")
+                                await text_q.put(
+                                    f"[System: The citizen has just uploaded a document: {fname}. "
+                                    f"Acknowledge its receipt in the conversation.]"
+                                )
+                                continue
+                            if payload.get("type") == "capture_photo":
+                                fname = payload.get("filename") or f"photo_{uuid.uuid4().hex[:8]}.jpg"
+                                b64 = payload.get("data", "")
+                                session_data.setdefault("captured_images", []).append(
+                                    {"filename": fname, "data_b64": b64}
+                                )
+                                logger.info(
+                                    f"Photo captured: session={session_id[:8]}, "
+                                    f"file={fname}, size_b64={len(b64)}"
+                                )
+                                total = len(session_data["captured_images"])
+                                await text_q.put(
+                                    f"[System: The citizen has captured a photo from their camera: '{fname}'. "
+                                    f"Total captured photos this session: {total}. "
+                                    f"This photo will be included automatically when the request is submitted. "
+                                    f"Acknowledge the capture briefly — e.g. confirm it will be used as their "
+                                    f"passport/ID photo if that is the relevant service.]"
+                                )
+                                continue
+                    except (json.JSONDecodeError, KeyError):
+                        pass
+                    await text_q.put(msg["text"])
+        except WebSocketDisconnect:
+            logger.info(f"WebSocket disconnected: session={session_id}")
+        except Exception as exc:
+            logger.error(f"receive_from_client error: {exc}")
+
+    receive_task = asyncio.create_task(receive_from_client())
+
+    try:
+        async for event in gemini.start_session(
+            audio_input_queue=audio_q,
+            video_input_queue=video_q,
+            text_input_queue=text_q,
+            audio_output_callback=on_audio_out,
+        ):
+            if event:
+                await websocket.send_json(event)
+    except Exception as exc:
+        import traceback
+        logger.error(f"Gemini session error: {type(exc).__name__}: {exc}\n{traceback.format_exc()}")
+    finally:
+        receive_task.cancel()
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+        _sessions.pop(session_id, None)
+        logger.info(f"Session cleaned up: {session_id}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Twilio Endpoints
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.post("/twilio/inbound")
+async def twilio_inbound():
+    host = TWILIO_APP_HOST or "localhost:8000"
+    twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Say>Connecting to the municipal AI assistant.</Say>
+    <Connect>
+        <Stream url="wss://{host}/twilio/stream" />
+    </Connect>
+</Response>"""
+    return Response(content=twiml, media_type="application/xml")
+
+
+@app.post("/twilio/outbound")
+async def twilio_outbound(
+    to_number: str = Query(..., description="Destination phone number (E.164 format)"),
+    from_number: str = Query(..., description="Your Twilio phone number (E.164 format)"),
+):
+    if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN:
+        return {"error": "TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN must be set."}
+    if not TWILIO_APP_HOST:
+        return {"error": "TWILIO_APP_HOST must be set."}
+
+    from twilio.rest import Client as TwilioClient
+    client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+    twiml = f"""<Response>
+    <Say>Connecting to the municipal AI assistant.</Say>
+    <Connect>
+        <Stream url="wss://{TWILIO_APP_HOST}/twilio/stream" />
+    </Connect>
+</Response>"""
+    call = client.calls.create(to=to_number, from_=from_number, twiml=twiml)
+    logger.info(f"Outbound call initiated: {call.sid}")
+    return {"callSid": call.sid, "status": call.status}
+
+
+@app.websocket("/twilio/stream")
+async def twilio_stream(websocket: WebSocket):
+    await websocket.accept()
+    logger.info("Twilio media stream connected")
+    handler = TwilioHandler(gemini_api_key=GEMINI_API_KEY, model=MODEL)
+    try:
+        await handler.handle_media_stream(websocket)
+    except Exception as exc:
+        logger.error(f"Twilio stream error: {exc}", exc_info=True)
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+        logger.info("Twilio media stream closed")
+
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)

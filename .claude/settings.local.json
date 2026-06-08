@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\stefa\\\\Desktop\\\\AI\\\\gemini-live-genai-python-sdk\" -Recurse -Force)",
+      "Bash(Select-Object FullName)",
+      "PowerShell(Get-ChildItem -Path \"C:\\\\Users\\\\stefa\\\\Desktop\\\\AI\\\\gemini-live-genai-python-sdk\" -Depth 1 | ForEach-Object { if \\($_.PSIsContainer\\) { \"DIR: $\\($_.Name\\)\" } else { \"FILE: $\\($_.Name\\)\" } })"
+    ]
+  }
+}
