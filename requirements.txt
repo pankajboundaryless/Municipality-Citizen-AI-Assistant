@@ -6,7 +6,6 @@ websockets
 python-dotenv
 python-multipart
 twilio
-audioop-lts
 aiohttp
 authlib
 httpx
