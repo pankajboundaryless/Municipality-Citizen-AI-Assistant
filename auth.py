@@ -70,6 +70,9 @@ async def login(provider: str, request: Request):
     if provider not in _enabled_providers():
         return RedirectResponse(url="/?auth_error=1")
     redirect_uri = str(request.url_for("auth_callback", provider=provider))
+    # Azure terminates SSL so internal requests appear as http — force https in prod
+    if os.getenv("SESSION_HTTPS_ONLY", "false").lower() == "true":
+        redirect_uri = redirect_uri.replace("http://", "https://", 1)
     client = getattr(oauth, provider)
     return await client.authorize_redirect(request, redirect_uri)
 
