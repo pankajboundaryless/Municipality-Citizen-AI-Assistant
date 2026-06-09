@@ -287,7 +287,7 @@ async def scan_id_card(request: Request, _user=Depends(require_auth)):
             model="gemini-2.0-flash",
             contents=[
                 genai_types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
-                genai_types.Part.from_text(
+                genai_types.Part.from_text(text=(
                     "You are an ID card OCR engine. Extract all readable information from this "
                     "identity document / residence permit / RP card image.\n"
                     "Return ONLY a valid JSON object with these fields (null if not visible):\n"
@@ -303,13 +303,15 @@ async def scan_id_card(request: Request, _user=Depends(require_auth)):
                     '  "place_of_birth": "city/country if visible"\n'
                     "}\n"
                     "Return ONLY the JSON. No explanation, no markdown, no code fences."
-                ),
+                )),
             ],
         )
         raw = response.text.strip()
+        logger.info(f"ID scan raw Gemini response: {raw[:300]}")
         # Strip markdown code fences if model wraps in them
         raw = re.sub(r"^```[a-z]*\n?", "", raw)
         raw = re.sub(r"\n?```$", "", raw)
+        raw = raw.strip()
         data = json.loads(raw)
         logger.info(f"ID scan extracted fields: {list(k for k,v in data.items() if v)}")
         return JSONResponse({"success": True, "data": data})

@@ -452,7 +452,7 @@
 
       <!-- Step 1: Camera view -->
       <div id="scanner-step-camera" class="scanner-step">
-        <p class="scanner-hint">Hold your card flat and steady inside the frame</p>
+        <p class="scanner-hint">Hold your card inside the frame — then <strong>tap the image</strong> or click <em>Take Photo</em></p>
         <div class="scanner-viewport">
           <video id="scanner-video" autoplay playsinline muted></video>
           <canvas id="scanner-canvas" style="display:none"></canvas>
@@ -474,7 +474,7 @@
               <circle cx="9" cy="9" r="4" fill="currentColor"/>
               <circle cx="9" cy="9" r="7.5" stroke="currentColor" stroke-width="1.5"/>
             </svg>
-            Capture &amp; Extract
+            Take Photo
           </button>
           <button id="scannerCancelBtn" class="btn btn-outline" type="button">Cancel</button>
         </div>
@@ -484,16 +484,16 @@
       <div id="scanner-step-processing" class="scanner-step hidden">
         <div class="scanner-processing">
           <div class="scan-spinner"></div>
-          <p class="scan-processing-text">Reading card details with AI…</p>
+          <p class="scan-processing-text">Scanning your document…</p>
         </div>
       </div>
 
       <!-- Step 3: Results -->
       <div id="scanner-step-results" class="scanner-step hidden">
-        <p class="scanner-hint success">Details extracted — review and confirm</p>
+        <p class="scanner-hint success">✓ Document scanned successfully — review your details below</p>
         <div class="scan-results" id="scan-results"></div>
         <div class="scanner-actions">
-          <button id="scanUseBtn" class="btn btn-primary btn-lg" type="button">Use These Details</button>
+          <button id="scanUseBtn" class="btn btn-primary btn-lg" type="button">✓ Use These Details</button>
           <button id="scanRetryBtn" class="btn btn-outline" type="button">Retake Photo</button>
         </div>
       </div>

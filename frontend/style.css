@@ -1385,3 +1385,10 @@ a:hover { text-decoration: underline; }
   100% { background: transparent; border-color: var(--gray-300); }
 }
 .field-scanned { animation: fieldFlash 2s ease-out forwards; }
+
+#scanner-video { cursor: pointer; }
+#scanner-video:hover::after { content: 'Tap to capture'; }
+
+.scanner-viewport { cursor: pointer; }
+.scanner-viewport:hover .scanner-status-badge { background: rgba(0,0,0,.7); }
+

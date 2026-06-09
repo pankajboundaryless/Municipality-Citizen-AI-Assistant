@@ -757,115 +757,167 @@ connectBtn.addEventListener('click', async () => {
 }, true);
 
 // ── ID Card Scanner ───────────────────────────────────────────
-const scannerModal    = document.getElementById('scanner-modal');
-const scannerVideo    = document.getElementById('scanner-video');
-const scannerCanvas   = document.getElementById('scanner-canvas');
-const scanIdBtn       = document.getElementById('scanIdBtn');
-const scannerCloseBtn = document.getElementById('scannerCloseBtn');
-const scannerCancelBtn = document.getElementById('scannerCancelBtn');
-const captureBtn      = document.getElementById('captureBtn');
-const scanUseBtn      = document.getElementById('scanUseBtn');
-const scanRetryBtn    = document.getElementById('scanRetryBtn');
-const scanErrorRetryBtn  = document.getElementById('scanErrorRetryBtn');
-const scanErrorCancelBtn = document.getElementById('scanErrorCancelBtn');
-
-let _scanStream = null;
+// ── ID Card Scanner (clean rewrite) ──────────────────────────
+let _scanStream    = null;
 let _scanExtracted = null;
 
-function _scannerStep(name) {
-  ['camera','processing','results','error'].forEach(s => {
-    document.getElementById(`scanner-step-${s}`).classList.toggle('hidden', s !== name);
-  });
+function _scanStep(name) {
+  ['camera','processing','results','error'].forEach(s =>
+    document.getElementById(`scanner-step-${s}`).classList.toggle('hidden', s !== name)
+  );
 }
 
+function _playTone(freq, dur) {
+  try {
+    const ac = new (window.AudioContext || window.webkitAudioContext)();
+    const o = ac.createOscillator(), g = ac.createGain();
+    o.connect(g); g.connect(ac.destination);
+    o.frequency.value = freq;
+    g.gain.setValueAtTime(0.25, ac.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + dur);
+    o.start(); o.stop(ac.currentTime + dur);
+  } catch { /**/ }
+}
+function _playShutter() { _playTone(1100, 0.06); setTimeout(() => _playTone(700, 0.09), 60); }
+function _playSuccess()  { _playTone(660, 0.12); setTimeout(() => _playTone(880, 0.18), 130); }
+
+let _cameraReady = false;
+
 async function openScanner() {
-  scannerModal.classList.remove('hidden');
-  _scannerStep('camera');
+  _cameraReady = false;
+  document.getElementById('scanner-modal').classList.remove('hidden');
+  _scanStep('camera');
+  const badge = document.getElementById('scanner-status-badge');
+  badge.textContent = '⏳ Starting camera…';
+  badge.style.color = '#94a3b8';
+
   try {
     _scanStream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }
     });
-    scannerVideo.srcObject = _scanStream;
-  } catch (e) {
-    // Fallback to any camera
-    try {
-      _scanStream = await navigator.mediaDevices.getUserMedia({ video: true });
-      scannerVideo.srcObject = _scanStream;
-    } catch (err) {
-      showScanError('Camera access denied. Please allow camera and try again.');
-    }
+  } catch {
+    try { _scanStream = await navigator.mediaDevices.getUserMedia({ video: true }); }
+    catch { _showScanError('Camera access denied — please allow camera permission and try again.'); return; }
   }
+
+  const video = document.getElementById('scanner-video');
+  video.srcObject = _scanStream;
+
+  // Wait for first frame before allowing capture
+  video.onloadeddata = () => {
+    _cameraReady = true;
+    badge.textContent = '📸 Tap the image to capture';
+    badge.style.color = '#4ade80';
+  };
 }
 
 function closeScanner() {
-  scannerModal.classList.add('hidden');
+  _cameraReady = false;
+  document.getElementById('scanner-modal').classList.add('hidden');
   if (_scanStream) { _scanStream.getTracks().forEach(t => t.stop()); _scanStream = null; }
-  scannerVideo.srcObject = null;
+  document.getElementById('scanner-video').srcObject = null;
 }
 
-function showScanError(msg) {
-  _scannerStep('error');
-  document.getElementById('scanner-error-msg').textContent = msg || 'Could not read card. Please try again.';
+function _showScanError(msg) {
+  _scanStep('error');
+  document.getElementById('scanner-error-msg').textContent =
+    msg || "Couldn't read card clearly — please retake the photo.";
 }
 
-async function captureAndExtract() {
-  if (!_scanStream) return;
-  _scannerStep('processing');
+async function _doCapture() {
+  const badge = document.getElementById('scanner-status-badge');
 
-  // Capture frame from video
-  const ctx = scannerCanvas.getContext('2d');
-  scannerCanvas.width  = scannerVideo.videoWidth  || 640;
-  scannerCanvas.height = scannerVideo.videoHeight || 480;
-  ctx.drawImage(scannerVideo, 0, 0, scannerCanvas.width, scannerCanvas.height);
-  const imageB64 = scannerCanvas.toDataURL('image/jpeg', 0.92).split(',')[1];
+  if (!_scanStream) { _showScanError('Camera not ready — please reopen the scanner.'); return; }
+  if (!_cameraReady) {
+    badge.textContent = '⏳ Camera still starting — please wait a moment';
+    badge.style.color = '#fbbf24';
+    return;
+  }
+
+  _playShutter();
+  _scanStep('processing');
+  document.querySelector('.scan-processing-text').textContent = 'Scanning your document…';
+
+  const video  = document.getElementById('scanner-video');
+  const canvas = document.getElementById('scanner-canvas');
+  canvas.width  = video.videoWidth  || 1280;
+  canvas.height = video.videoHeight || 720;
+  canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+  const imageB64 = canvas.toDataURL('image/jpeg', 0.95).split(',')[1];
+
+  // Debug: verify image captured is not blank
+  const sizeKB = Math.round(imageB64.length * 0.75 / 1024);
+  console.log(`[Scan] Image captured: ${canvas.width}x${canvas.height}, ~${sizeKB}KB`);
+
+  if (sizeKB < 5) {
+    _showScanError("Camera frame not ready — please wait for the badge to turn green then tap again.");
+    return;
+  }
 
   try {
     const res  = await fetch('/scan-id', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ image: imageB64 }),
     });
+
+    if (res.status === 401) {
+      _showScanError('Session expired — please sign in again and retry.');
+      return;
+    }
+    if (!res.ok) {
+      _showScanError(`Server error (${res.status}) — please try again.`);
+      return;
+    }
+
     const json = await res.json();
-    if (!json.success) { showScanError(json.error); return; }
+    console.log('[Scan] API response:', JSON.stringify(json));
+
+    if (!json.success) {
+      _showScanError(json.error || "Card scan failed — please try again.");
+      return;
+    }
+
+    // Accept if ANY meaningful field was extracted
+    const meaningful = ['name','id_number','date_of_birth','nationality','expiry_date','document_type'];
+    const hasData = json.data &&
+      meaningful.some(k => json.data[k] && String(json.data[k]).toLowerCase() !== 'null');
+
+    if (!hasData) {
+      _showScanError("Card text not detected — ensure the card is well-lit, flat, and fills the frame, then tap again.");
+      return;
+    }
 
     _scanExtracted = json.data;
-    renderScanResults(json.data);
-    _scannerStep('results');
+    _renderScanResults(json.data);
+    _scanStep('results');
+    _playSuccess();
   } catch (err) {
-    showScanError('Network error — please try again.');
+    console.error('[Scan] error:', err);
+    _showScanError('Connection error — please check your network and try again.');
   }
 }
 
-function renderScanResults(data) {
+function _renderScanResults(data) {
   const labels = {
-    name: 'Full Name', id_number: 'ID / Permit Number',
+    name: 'Full Name', id_number: 'ID / Permit No.',
     date_of_birth: 'Date of Birth', nationality: 'Nationality',
-    expiry_date: 'Expiry Date', address: 'Address',
-    document_type: 'Document Type', gender: 'Gender',
-    place_of_birth: 'Place of Birth',
+    expiry_date: 'Expiry Date', document_type: 'Document Type',
+    gender: 'Gender', place_of_birth: 'Place of Birth', address: 'Address',
   };
-  const box = document.getElementById('scan-results');
-  box.innerHTML = Object.entries(data)
-    .filter(([, v]) => v)
-    .map(([k, v]) => `
-      <div class="scan-field">
+  document.getElementById('scan-results').innerHTML =
+    Object.entries(data).filter(([, v]) => v)
+      .map(([k, v]) => `<div class="scan-field">
         <span class="scan-field-label">${labels[k] || k}</span>
         <span class="scan-field-value">${v}</span>
       </div>`).join('');
 }
 
-function applyScanResults() {
+function _applyScan() {
   if (!_scanExtracted) return;
   const d = _scanExtracted;
-  if (d.name)      { citizenNameEl.value  = d.name;      validateForm(); }
-  if (d.id_number) { citizenIdEl.value    = d.id_number; }
-  if (d.nationality || d.place_of_birth) {
-    // append to phone field or a note — just store in a data attr for the session
-    citizenPhoneEl.dataset.nationality = d.nationality || '';
-  }
+  if (d.name)      { citizenNameEl.value = d.name; validateForm(); }
+  if (d.id_number) { citizenIdEl.value   = d.id_number; }
   closeScanner();
-
-  // Flash the filled fields so the user sees what changed
   [citizenNameEl, citizenIdEl].forEach(el => {
     if (el.value) {
       el.classList.add('field-scanned');
@@ -874,18 +926,25 @@ function applyScanResults() {
   });
 }
 
-// Wire up buttons
-scanIdBtn?.addEventListener('click', openScanner);
-scannerCloseBtn?.addEventListener('click', closeScanner);
-scannerCancelBtn?.addEventListener('click', closeScanner);
-captureBtn?.addEventListener('click', captureAndExtract);
-scanUseBtn?.addEventListener('click', applyScanResults);
-scanRetryBtn?.addEventListener('click', () => _scannerStep('camera'));
-scanErrorRetryBtn?.addEventListener('click', () => _scannerStep('camera'));
-scanErrorCancelBtn?.addEventListener('click', closeScanner);
+// ── Wire up via event delegation on the modal (works even when hidden) ──
+document.getElementById('scanner-modal')?.addEventListener('click', e => {
+  const t = e.target;
+  // Tap video / viewport area → capture
+  if (t.closest('.scanner-viewport')) { _doCapture(); return; }
+  // Buttons
+  if (t.id === 'scanIdBtn' || t.closest('#scanIdBtn'))             { openScanner(); return; }
+  if (t.id === 'scannerCloseBtn'  || t.closest('#scannerCloseBtn'))  { closeScanner(); return; }
+  if (t.id === 'scannerCancelBtn' || t.closest('#scannerCancelBtn')) { closeScanner(); return; }
+  if (t.id === 'captureBtn'       || t.closest('#captureBtn'))       { _doCapture(); return; }
+  if (t.id === 'scanUseBtn'       || t.closest('#scanUseBtn'))       { _applyScan(); return; }
+  if (t.id === 'scanRetryBtn'     || t.closest('#scanRetryBtn'))     { _scanStep('camera'); return; }
+  if (t.id === 'scanErrorRetryBtn'|| t.closest('#scanErrorRetryBtn')){ _scanStep('camera'); return; }
+  if (t.id === 'scanErrorCancelBtn'||t.closest('#scanErrorCancelBtn')){ closeScanner(); return; }
+  // Backdrop
+  if (t.id === 'scanner-modal') closeScanner();
+});
 
-// Close on backdrop click
-scannerModal?.addEventListener('click', e => { if (e.target === scannerModal) closeScanner(); });
+document.getElementById('scanIdBtn')?.addEventListener('click', openScanner);
 
 // ── Initialise ────────────────────────────────────────────────
 initAuth();
