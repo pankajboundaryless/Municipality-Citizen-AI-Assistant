@@ -25,10 +25,30 @@ from gemini_live import GeminiLive
 from twilio_handler import TwilioHandler
 from uipath_maestro import UiPathMaestroClient, UiPathMaestroConfig
 
-logging.basicConfig(level=logging.INFO)
-logging.getLogger("gemini_live").setLevel(logging.DEBUG)
-logging.getLogger(__name__).setLevel(logging.DEBUG)
-logger = logging.getLogger(__name__)
+def _setup_logging() -> logging.Logger:
+    log_file = os.getenv("LOG_FILE")
+    handlers: list[logging.Handler] = [logging.StreamHandler()]
+    if log_file:
+        file_handler = logging.FileHandler(log_file, encoding="utf-8")
+        file_handler.setFormatter(logging.Formatter(
+            "%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        ))
+        handlers.append(file_handler)
+    logging.basicConfig(
+        level=logging.INFO,
+        handlers=handlers,
+        format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    logging.getLogger("gemini_live").setLevel(logging.DEBUG)
+    _log = logging.getLogger(__name__)
+    _log.setLevel(logging.DEBUG)
+    if log_file:
+        _log.info(f"File logging enabled → {log_file}")
+    return _log
+
+logger = _setup_logging()
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 MODEL = os.getenv("MODEL", "gemini-3.1-flash-live-preview")
@@ -155,11 +175,27 @@ _SUBMIT_TOOL = {
 
 def _build_system_instruction(citizen: dict, prev_transcript: list | None = None) -> str:
     name = citizen.get("name") or "Citizen"
-    id_num = citizen.get("idNumber") or "not provided"
-    email = citizen.get("email") or "not provided"
-    phone = citizen.get("phone") or "not provided"
+    id_num = citizen.get("idNumber") or ""
+    email = citizen.get("email") or ""
+    phone = citizen.get("phone") or ""
     service = citizen.get("selectedService") or "General Inquiry"
     lang_code = citizen.get("preferredLanguage") or "en"
+
+    # Build a list of fields that are already known so the AI never re-asks for them
+    known_fields: list[str] = [f"Full name: {name}"]
+    if id_num:
+        known_fields.append(f"ID / Document number: {id_num}")
+    if email:
+        known_fields.append(f"Email address: {email}")
+    if phone:
+        known_fields.append(f"Phone number: {phone}")
+
+    already_known_block = (
+        "\n\nPRE-FILLED CITIZEN DATA (collected on the registration screen before this session):\n"
+        + "\n".join(f"  - {f}" for f in known_fields)
+        + "\n\nDo NOT ask the citizen for any of the above fields — they are already on record. "
+        "Skip directly to any remaining missing information for the service checklist below."
+    )
 
     requirements_section = _get_requirements(service)
     requirements_block = (
@@ -189,11 +225,12 @@ def _build_system_instruction(citizen: dict, prev_transcript: list | None = None
         "  - Always read back a concise summary of collected data before submitting.\n\n"
         f"Current session information:\n"
         f"  Citizen name:      {name}\n"
-        f"  Document number:   {id_num}\n"
-        f"  Email:             {email}\n"
-        f"  Phone:             {phone}\n"
+        f"  Document number:   {id_num or 'not provided'}\n"
+        f"  Email:             {email or 'not provided'}\n"
+        f"  Phone:             {phone or 'not provided'}\n"
         f"  Requested service: {service}\n"
-        f"  Preferred language: {lang_code}\n\n"
+        f"  Preferred language: {lang_code}\n"
+        f"{already_known_block}\n\n"
         f"Language: Your primary response language for this session is the one identified by "
         f"BCP-47 code '{lang_code}'. Always respond in that language. "
         "If the citizen writes or speaks in a different language during the conversation, "
@@ -409,9 +446,17 @@ async def websocket_endpoint(
     audio_q: asyncio.Queue = asyncio.Queue()
     video_q: asyncio.Queue = asyncio.Queue()
     text_q: asyncio.Queue = asyncio.Queue()
+    # Lock that serialises all WebSocket writes — prevents the concurrent-send
+    # AssertionError that occurs when on_audio_out (called from receive_loop task)
+    # and the main event loop both try to write the socket at the same time.
+    ws_send_lock = asyncio.Lock()
 
     async def on_audio_out(data: bytes) -> None:
-        await websocket.send_bytes(data)
+        try:
+            async with ws_send_lock:
+                await websocket.send_bytes(data)
+        except Exception:
+            pass  # client disconnected
 
     async def handle_submit(subject: str, summary: str) -> str:
         """Tool handler: forwards citizen request to UiPath Maestro."""
@@ -504,13 +549,21 @@ async def websocket_endpoint(
             audio_output_callback=on_audio_out,
         ):
             if event:
-                await websocket.send_json(event)
-                # Accumulate text turns for persistence
-                if isinstance(event, dict) and event.get("type") in ("user", "gemini"):
-                    live_transcript.append({
-                        "type": event["type"],
-                        "text": event.get("text", ""),
-                    })
+                try:
+                    async with ws_send_lock:
+                        await websocket.send_json(event)
+                    # Accumulate text turns for persistence
+                    if isinstance(event, dict) and event.get("type") in ("user", "gemini"):
+                        live_transcript.append({
+                            "type": event["type"],
+                            "text": event.get("text", ""),
+                        })
+                except Exception as exc:
+                    logger.info(
+                        f"WebSocket send failed (client disconnected): "
+                        f"{type(exc).__name__} — session={session_id[:8]}"
+                    )
+                    break
     except Exception as exc:
         import traceback
         logger.error(f"Gemini session error: {type(exc).__name__}: {exc}\n{traceback.format_exc()}")

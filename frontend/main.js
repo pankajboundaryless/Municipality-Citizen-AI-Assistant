@@ -148,12 +148,19 @@ const geminiClient = new GeminiClient({
 
     const name    = citizenNameEl.value.trim() || 'Citizen';
     const service = selectedService || 'general inquiry';
+
+    // Build a summary of all pre-filled fields so the model never re-asks for them
+    const knownParts = [`name: ${name}`];
+    if (citizenIdEl.value.trim())    knownParts.push(`ID/document number: ${citizenIdEl.value.trim()}`);
+    if (citizenEmailEl.value.trim()) knownParts.push(`email: ${citizenEmailEl.value.trim()}`);
+    if (citizenPhoneEl.value.trim()) knownParts.push(`phone: ${citizenPhoneEl.value.trim()}`);
+
     geminiClient.sendText(
-      `System: The citizen ${name} has just connected. Their requested service is: ${service}. ` +
-      `Their preferred language (detected from browser) is: ${detectedLanguage}. ` +
-      `Respond in this language throughout the session (switch naturally if they use another). ` +
-      `Greet them warmly by first name, briefly confirm you can assist with their ${service} enquiry, ` +
-      `and ask one focused opening question to understand their specific need. Keep the greeting under 3 sentences.`
+      `System: The citizen has just connected. Pre-filled registration data — ${knownParts.join(', ')}. ` +
+      `Requested service: ${service}. Preferred language: ${detectedLanguage}. ` +
+      `These fields are already on record — do NOT ask for them again. ` +
+      `Greet the citizen warmly by first name, briefly confirm you can assist with their ${service} enquiry, ` +
+      `and ask one focused opening question about what they still need. Keep the greeting under 3 sentences.`
     );
   },
 
