@@ -8,16 +8,19 @@ import re
 import uuid
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, Query, UploadFile, WebSocket, WebSocketDisconnect
+load_dotenv()  # Must run before any module that reads env vars at import time
+
+from fastapi import Depends, FastAPI, File, Form, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.sessions import SessionMiddleware
 
+from auth import require_auth, get_current_user, router as auth_router
+from db import init_db, upsert_session, get_last_session
 from gemini_live import GeminiLive
 from twilio_handler import TwilioHandler
 from uipath_maestro import UiPathMaestroClient, UiPathMaestroConfig
-
-load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
 logging.getLogger("gemini_live").setLevel(logging.DEBUG)
@@ -32,6 +35,7 @@ TWILIO_APP_HOST = os.getenv("TWILIO_APP_HOST")
 
 app = FastAPI(title="Municipality Citizen AI Assistant")
 
+# SessionMiddleware must wrap CORSMiddleware so cookies are available in all handlers
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -39,8 +43,21 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=os.getenv("SESSION_SECRET_KEY", "dev-secret-key-change-in-production"),
+    https_only=os.getenv("SESSION_HTTPS_ONLY", "false").lower() == "true",
+    same_site="lax",
+)
+
+app.include_router(auth_router)
 
 app.mount("/static", StaticFiles(directory="frontend"), name="static")
+
+
+@app.on_event("startup")
+async def startup():
+    await init_db()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Service requirements loader
@@ -133,7 +150,7 @@ _SUBMIT_TOOL = {
 # System instruction builder
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _build_system_instruction(citizen: dict) -> str:
+def _build_system_instruction(citizen: dict, prev_transcript: list | None = None) -> str:
     name = citizen.get("name") or "Citizen"
     id_num = citizen.get("idNumber") or "not provided"
     email = citizen.get("email") or "not provided"
@@ -194,6 +211,29 @@ def _build_system_instruction(citizen: dict) -> str:
         "Handle personal data with discretion. If you cannot answer a specific procedural "
         "question, direct the citizen to the relevant municipal department or advise an in-person visit."
         f"{requirements_block}"
+        + _build_transcript_context(prev_transcript)
+    )
+
+
+def _build_transcript_context(transcript: list | None) -> str:
+    if not transcript:
+        return ""
+    lines = []
+    for msg in transcript[-40:]:
+        role = "Citizen" if msg.get("type") == "user" else "Assistant"
+        text = msg.get("text", "").strip()
+        if text:
+            lines.append(f"{role}: {text}")
+    if not lines:
+        return ""
+    history = "\n".join(lines)
+    return (
+        "\n\n## Resumed Session — Previous Conversation\n\n"
+        "The citizen is continuing a previous session. The conversation so far:\n\n"
+        f"{history}\n\n"
+        "Continue naturally from where the conversation left off. "
+        "Do NOT re-introduce yourself or re-greet — pick up the context directly. "
+        "Briefly acknowledge that you remember the previous discussion."
     )
 
 
@@ -206,14 +246,34 @@ async def root():
     return FileResponse("frontend/index.html")
 
 
+@app.get("/session/last")
+async def session_last(request: Request, _user=Depends(require_auth)):
+    """Return the most recent persisted session for the logged-in user."""
+    user = get_current_user(request)
+    if not user:
+        return JSONResponse({"found": False})
+    last = await get_last_session(user["sub"])
+    if not last:
+        return JSONResponse({"found": False})
+    return JSONResponse({
+        "found": True,
+        "sessionId": last["session_id"],
+        "citizenData": last["citizen_data"],
+        "transcript": last["transcript"][-40:],  # last 40 messages for context
+        "status": last["status"],
+        "updatedAt": last["updated_at"],
+    })
+
+
 @app.post("/session/init")
-async def session_init(data: dict):
+async def session_init(data: dict, _user=Depends(require_auth)):
     """Create or refresh a citizen session with profile data before the WebSocket connects."""
     session_id = data.get("sessionId") or str(uuid.uuid4())
     existing_docs = _sessions.get(session_id, {}).get("documents", [])
     _sessions[session_id] = {
         "citizen_data": data.get("citizenData", {}),
         "documents": existing_docs,
+        "transcript": data.get("transcript", []),  # carry over previous transcript if resuming
     }
     logger.info(f"Session initialised: {session_id[:8]}…")
     return {"sessionId": session_id, "status": "ok"}
@@ -223,6 +283,7 @@ async def session_init(data: dict):
 async def upload_document(
     sessionId: str = Form(...),
     file: UploadFile = File(...),
+    _user=Depends(require_auth),
 ):
     """Attach an uploaded document to an active citizen session."""
     if sessionId not in _sessions:
@@ -266,13 +327,23 @@ async def websocket_endpoint(
     await websocket.accept()
     logger.info(f"WebSocket accepted: session={session_id}")
 
+    # Enforce auth on the WebSocket handshake when OAuth is configured
+    if not get_current_user(websocket):
+        from auth import _oauth_enabled
+        if _oauth_enabled():
+            await websocket.close(code=1008, reason="Unauthorized")
+            return
+
     if not session_id or session_id not in _sessions:
         session_id = session_id or str(uuid.uuid4())
-        _sessions[session_id] = {"citizen_data": {}, "documents": []}
+        _sessions[session_id] = {"citizen_data": {}, "documents": [], "transcript": []}
 
     session_data = _sessions[session_id]
     citizen_data = session_data.get("citizen_data", {})
-    system_instruction = _build_system_instruction(citizen_data)
+
+    # Inject previous transcript so Gemini can continue the conversation
+    prev_transcript = session_data.get("transcript", [])
+    system_instruction = _build_system_instruction(citizen_data, prev_transcript or None)
 
     # Pre-fetch UiPath token + folder + release key in the background
     # so they are already cached when submit_to_municipality is called
@@ -365,6 +436,9 @@ async def websocket_endpoint(
 
     receive_task = asyncio.create_task(receive_from_client())
 
+    # Live transcript collected during this session
+    live_transcript: list[dict] = list(prev_transcript)
+
     try:
         async for event in gemini.start_session(
             audio_input_queue=audio_q,
@@ -374,11 +448,32 @@ async def websocket_endpoint(
         ):
             if event:
                 await websocket.send_json(event)
+                # Accumulate text turns for persistence
+                if isinstance(event, dict) and event.get("type") in ("user", "gemini"):
+                    live_transcript.append({
+                        "type": event["type"],
+                        "text": event.get("text", ""),
+                    })
     except Exception as exc:
         import traceback
         logger.error(f"Gemini session error: {type(exc).__name__}: {exc}\n{traceback.format_exc()}")
     finally:
         receive_task.cancel()
+        # Persist session to DB so the user can resume later
+        logged_in_user = get_current_user(websocket)
+        if logged_in_user and live_transcript:
+            try:
+                await upsert_session(
+                    session_id=session_id,
+                    user_sub=logged_in_user["sub"],
+                    user_email=logged_in_user.get("email", ""),
+                    user_name=logged_in_user.get("name", ""),
+                    citizen_data=citizen_data,
+                    transcript=live_transcript,
+                )
+                logger.info(f"Session persisted: {session_id[:8]}… ({len(live_transcript)} messages)")
+            except Exception as exc:
+                logger.error(f"Failed to persist session: {exc}")
         try:
             await websocket.close()
         except Exception:

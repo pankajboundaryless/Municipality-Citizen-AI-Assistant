@@ -15,6 +15,69 @@ function getFileExt(filename) {
   return (filename.split('.').pop() || 'FILE').toUpperCase().slice(0, 4);
 }
 
+// ── Auth ──────────────────────────────────────────────────────
+const loginSection = document.getElementById('login-section');
+
+async function initAuth() {
+  let data;
+  try {
+    const res = await fetch('/auth/me');
+    data = await res.json();
+  } catch {
+    // Network error — show login gate
+    loginSection.classList.remove('hidden');
+    return;
+  }
+
+  // Show auth error banner if redirected back with ?auth_error=1
+  if (new URLSearchParams(location.search).get('auth_error')) {
+    document.getElementById('auth-error-msg')?.classList.remove('hidden');
+    history.replaceState({}, '', '/');
+  }
+
+  if (!data.authenticated) {
+    // Show only the buttons for providers that are configured
+    const msBtn = document.getElementById('loginMicrosoftBtn');
+    const gBtn  = document.getElementById('loginGoogleBtn');
+    const providers = data.providers || [];
+    if (msBtn) msBtn.style.display = providers.includes('microsoft') ? '' : 'none';
+    if (gBtn)  gBtn.style.display  = providers.includes('google')    ? '' : 'none';
+    loginSection.classList.remove('hidden');
+    return;
+  }
+
+  // User is authenticated — show the citizen form
+  loginSection.classList.add('hidden');
+  authSection.classList.remove('hidden');
+
+  if (data.user) {
+    // Pre-fill form fields from OAuth profile
+    if (data.user.name && !citizenNameEl.value) {
+      citizenNameEl.value = data.user.name;
+      validateForm();
+    }
+    if (data.user.email && !citizenEmailEl.value) {
+      citizenEmailEl.value = data.user.email;
+    }
+
+    // Check for a previous session to resume
+    checkResumeSession();
+
+    // Show user indicator in the header
+    const indicator = document.getElementById('user-indicator');
+    const nameEl    = document.getElementById('user-display-name');
+    const avatarImg = document.getElementById('user-avatar-img');
+    if (indicator) {
+      if (nameEl) nameEl.textContent = data.user.name || data.user.email || 'Signed in';
+      if (avatarImg && data.user.picture) {
+        avatarImg.src = data.user.picture;
+        avatarImg.style.display = 'inline-block';
+      }
+      indicator.classList.remove('hidden');
+    }
+  }
+}
+
 // ── DOM References ────────────────────────────────────────────
 const authSection       = document.getElementById('auth-section');
 const appSection        = document.getElementById('app-section');
@@ -284,7 +347,11 @@ connectBtn.addEventListener('click', async () => {
     const res = await fetch('/session/init', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId: currentSessionId, citizenData }),
+      body: JSON.stringify({
+        sessionId: currentSessionId,
+        citizenData,
+        transcript: currentResumeTranscript,
+      }),
     });
 
     if (!res.ok) throw new Error('Session initialisation failed');
@@ -600,6 +667,7 @@ function showSessionEnd() {
 }
 
 function resetUI() {
+  loginSection.classList.add('hidden');
   authSection.classList.remove('hidden');
   appSection.classList.add('hidden');
   sessionEndSection.classList.add('hidden');
@@ -632,3 +700,61 @@ function resetUI() {
 }
 
 restartBtn.addEventListener('click', resetUI);
+
+// ── Session Resume ────────────────────────────────────────────
+let _resumeData = null;
+
+async function checkResumeSession() {
+  try {
+    const res = await fetch('/session/last');
+    const data = await res.json();
+    if (!data.found) return;
+
+    _resumeData = data;
+    const banner = document.getElementById('resume-banner');
+    const info   = document.getElementById('resume-info');
+    if (!banner) return;
+
+    const date = new Date(data.updatedAt).toLocaleString([], {
+      month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+    });
+    const service = data.citizenData?.selectedService || 'General Inquiry';
+    if (info) info.textContent = `${service} — last active ${date}`;
+    banner.classList.remove('hidden');
+  } catch { /* ignore */ }
+}
+
+function applyResumeSession() {
+  if (!_resumeData) return;
+  const cd = _resumeData.citizenData || {};
+  if (cd.name)  { citizenNameEl.value  = cd.name;  validateForm(); }
+  if (cd.email) { citizenEmailEl.value = cd.email; }
+  if (cd.phone) { citizenPhoneEl.value = cd.phone; }
+  if (cd.idNumber) { citizenIdEl.value = cd.idNumber; }
+
+  // Select the matching service card
+  if (cd.selectedService) {
+    serviceCards.forEach(c => {
+      const match = c.dataset.service === cd.selectedService;
+      c.classList.toggle('selected', match);
+      c.setAttribute('aria-pressed', match ? 'true' : 'false');
+      if (match) selectedService = cd.selectedService;
+    });
+    validateForm();
+  }
+
+  // Carry transcript so Gemini gets the context on reconnect
+  currentResumeTranscript = _resumeData.transcript || [];
+  document.getElementById('resume-banner')?.classList.add('hidden');
+}
+
+let currentResumeTranscript = [];
+
+// Override connectBtn to pass transcript when resuming
+const _origConnect = connectBtn.onclick;
+connectBtn.addEventListener('click', async () => {
+  // inject transcript into session init payload (handled in the existing click listener)
+}, true);
+
+// ── Initialise ────────────────────────────────────────────────
+initAuth();

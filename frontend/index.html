@@ -27,9 +27,18 @@
           <span class="brand-subtitle">Official Digital Services Portal</span>
         </div>
       </div>
-      <div id="status" class="status-badge disconnected" role="status" aria-live="polite">
-        <span class="status-dot"></span>
-        <span class="status-text">Not Connected</span>
+      <div class="header-right">
+        <div id="user-indicator" class="user-indicator hidden">
+          <img id="user-avatar-img" class="user-avatar-img" src="" alt="" aria-hidden="true" />
+          <span id="user-display-name" class="user-display-name"></span>
+          <form action="/auth/logout" method="post" style="display:inline">
+            <button type="submit" class="btn-logout" title="Sign out">Sign out</button>
+          </form>
+        </div>
+        <div id="status" class="status-badge disconnected" role="status" aria-live="polite">
+          <span class="status-dot"></span>
+          <span class="status-text">Not Connected</span>
+        </div>
       </div>
     </div>
   </header>
@@ -37,12 +46,90 @@
   <!-- ── Main Content ────────────────────────────────────────── -->
   <main class="main-content">
 
+    <!-- Login Gate ─────────────────────────────────────────── -->
+    <section id="login-section" class="section-pane hidden">
+      <div class="login-gate">
+        <div class="login-seal" aria-hidden="true">
+          <svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="32" cy="32" r="30" stroke="#800020" stroke-width="2.5"/>
+            <circle cx="32" cy="32" r="18" stroke="#800020" stroke-width="1.5" stroke-dasharray="4 3"/>
+            <path d="M32 10v44M10 32h44" stroke="#800020" stroke-width="1" opacity="0.35"/>
+            <rect x="21" y="27" width="22" height="12" rx="3" fill="#800020"/>
+            <rect x="26" y="20" width="12" height="7" rx="2" fill="#800020"/>
+            <path d="M22 31h20M22 34h15" stroke="#fff" stroke-width="1.4" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <h1 class="login-title">Municipality Citizen Services</h1>
+        <p class="login-subtitle">Secure Digital Immigration &amp; Document Portal</p>
+        <p class="login-desc">
+          To protect your personal data and ensure the integrity of your application,
+          you must verify your identity before accessing this portal.
+        </p>
+
+        <div id="login-btn-area" class="login-btn-area">
+          <!-- Buttons shown/hidden by JS based on which providers are configured -->
+          <a href="/auth/login/microsoft" class="btn btn-login btn-login-microsoft" id="loginMicrosoftBtn">
+            <!-- Microsoft logo -->
+            <svg width="20" height="20" viewBox="0 0 21 21" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <rect x="1" y="1" width="9" height="9" fill="#F25022"/>
+              <rect x="11" y="1" width="9" height="9" fill="#7FBA00"/>
+              <rect x="1" y="11" width="9" height="9" fill="#00A4EF"/>
+              <rect x="11" y="11" width="9" height="9" fill="#FFB900"/>
+            </svg>
+            Sign in with Microsoft
+          </a>
+          <a href="/auth/login/google" class="btn btn-login btn-login-google" id="loginGoogleBtn">
+            <!-- Google logo -->
+            <svg width="20" height="20" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+              <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
+              <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
+              <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+              <path fill="none" d="M0 0h48v48H0z"/>
+            </svg>
+            Sign in with Google
+          </a>
+        </div>
+
+        <p id="auth-error-msg" class="login-error hidden">
+          Sign-in was cancelled or an error occurred. Please try again.
+        </p>
+
+        <p class="login-trust">
+          <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true" style="vertical-align:-2px;margin-right:4px">
+            <path d="M7 1L1.5 3v4c0 3 2.5 5.5 5.5 6 3-.5 5.5-3 5.5-6V3L7 1z"
+              stroke="#276749" stroke-width="1.2" stroke-linejoin="round" fill="#e6f4ea"/>
+            <path d="M4.5 7l2 2L9.5 5" stroke="#276749" stroke-width="1.2"
+              stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          Your identity is verified through a trusted authentication provider.
+          No passwords are stored by this portal.
+        </p>
+      </div>
+    </section>
+
     <!-- Welcome / Auth Section ─────────────────────────────── -->
-    <section id="auth-section" class="section-pane">
+    <section id="auth-section" class="section-pane hidden">
 
       <div class="welcome-banner">
         <h1 class="welcome-title">Welcome to Citizen Services</h1>
         <p class="welcome-desc">Our digital assistant guides you through municipal service enquiries and application procedures.</p>
+      </div>
+
+      <!-- Resume Banner (shown when a previous session exists) -->
+      <div id="resume-banner" class="resume-banner hidden">
+        <div class="resume-banner-inner">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
+            <path d="M9 1a8 8 0 100 16A8 8 0 009 1zm0 4v5l3 3" stroke="currentColor"
+              stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <div>
+            <span class="resume-label">Continue previous session:</span>
+            <span id="resume-info" class="resume-info"></span>
+          </div>
+          <button class="btn btn-sm btn-primary" onclick="applyResumeSession()" type="button">Resume</button>
+          <button class="resume-dismiss" onclick="document.getElementById('resume-banner').classList.add('hidden')" type="button" aria-label="Dismiss">×</button>
+        </div>
       </div>
 
       <div class="auth-layout">
