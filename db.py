@@ -6,7 +6,8 @@ from datetime import datetime, timezone
 import aiosqlite
 
 logger = logging.getLogger(__name__)
-DB_PATH = os.getenv("DB_PATH", "citizen_sessions.db")
+# /home persists across restarts on Azure App Service; fallback to local for dev
+DB_PATH = os.getenv("DB_PATH", "/home/citizen_sessions.db" if os.path.isdir("/home") else "citizen_sessions.db")
 
 
 async def init_db() -> None:
