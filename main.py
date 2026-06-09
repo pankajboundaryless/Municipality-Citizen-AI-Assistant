@@ -16,6 +16,9 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
+from google import genai as google_genai
+from google.genai import types as genai_types
+
 from auth import require_auth, get_current_user, router as auth_router
 from db import init_db, upsert_session, get_last_session
 from gemini_live import GeminiLive
@@ -263,6 +266,58 @@ async def session_last(request: Request, _user=Depends(require_auth)):
         "status": last["status"],
         "updatedAt": last["updated_at"],
     })
+
+
+@app.post("/scan-id")
+async def scan_id_card(request: Request, _user=Depends(require_auth)):
+    """Extract citizen details from a photographed ID / Residence Permit card using Gemini Flash."""
+    body = await request.json()
+    image_b64 = body.get("image", "")
+    if not image_b64:
+        return JSONResponse({"success": False, "error": "No image provided"}, status_code=400)
+
+    try:
+        image_bytes = base64.b64decode(image_b64)
+    except Exception:
+        return JSONResponse({"success": False, "error": "Invalid image data"}, status_code=400)
+
+    try:
+        client = google_genai.Client(api_key=GEMINI_API_KEY)
+        response = await client.aio.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=[
+                genai_types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
+                genai_types.Part.from_text(
+                    "You are an ID card OCR engine. Extract all readable information from this "
+                    "identity document / residence permit / RP card image.\n"
+                    "Return ONLY a valid JSON object with these fields (null if not visible):\n"
+                    "{\n"
+                    '  "name": "full name as printed",\n'
+                    '  "id_number": "document/ID/permit number",\n'
+                    '  "date_of_birth": "DD/MM/YYYY or as printed",\n'
+                    '  "nationality": "country name",\n'
+                    '  "expiry_date": "DD/MM/YYYY or as printed",\n'
+                    '  "address": "address if visible",\n'
+                    '  "document_type": "type e.g. Residence Permit / Passport / ID Card",\n'
+                    '  "gender": "M or F or as printed",\n'
+                    '  "place_of_birth": "city/country if visible"\n'
+                    "}\n"
+                    "Return ONLY the JSON. No explanation, no markdown, no code fences."
+                ),
+            ],
+        )
+        raw = response.text.strip()
+        # Strip markdown code fences if model wraps in them
+        raw = re.sub(r"^```[a-z]*\n?", "", raw)
+        raw = re.sub(r"\n?```$", "", raw)
+        data = json.loads(raw)
+        logger.info(f"ID scan extracted fields: {list(k for k,v in data.items() if v)}")
+        return JSONResponse({"success": True, "data": data})
+    except json.JSONDecodeError:
+        return JSONResponse({"success": False, "error": "Could not parse card details — try a clearer photo"})
+    except Exception as exc:
+        logger.error(f"scan-id error: {exc}")
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=500)
 
 
 @app.post("/session/init")

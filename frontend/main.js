@@ -756,5 +756,136 @@ connectBtn.addEventListener('click', async () => {
   // inject transcript into session init payload (handled in the existing click listener)
 }, true);
 
+// ── ID Card Scanner ───────────────────────────────────────────
+const scannerModal    = document.getElementById('scanner-modal');
+const scannerVideo    = document.getElementById('scanner-video');
+const scannerCanvas   = document.getElementById('scanner-canvas');
+const scanIdBtn       = document.getElementById('scanIdBtn');
+const scannerCloseBtn = document.getElementById('scannerCloseBtn');
+const scannerCancelBtn = document.getElementById('scannerCancelBtn');
+const captureBtn      = document.getElementById('captureBtn');
+const scanUseBtn      = document.getElementById('scanUseBtn');
+const scanRetryBtn    = document.getElementById('scanRetryBtn');
+const scanErrorRetryBtn  = document.getElementById('scanErrorRetryBtn');
+const scanErrorCancelBtn = document.getElementById('scanErrorCancelBtn');
+
+let _scanStream = null;
+let _scanExtracted = null;
+
+function _scannerStep(name) {
+  ['camera','processing','results','error'].forEach(s => {
+    document.getElementById(`scanner-step-${s}`).classList.toggle('hidden', s !== name);
+  });
+}
+
+async function openScanner() {
+  scannerModal.classList.remove('hidden');
+  _scannerStep('camera');
+  try {
+    _scanStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
+    });
+    scannerVideo.srcObject = _scanStream;
+  } catch (e) {
+    // Fallback to any camera
+    try {
+      _scanStream = await navigator.mediaDevices.getUserMedia({ video: true });
+      scannerVideo.srcObject = _scanStream;
+    } catch (err) {
+      showScanError('Camera access denied. Please allow camera and try again.');
+    }
+  }
+}
+
+function closeScanner() {
+  scannerModal.classList.add('hidden');
+  if (_scanStream) { _scanStream.getTracks().forEach(t => t.stop()); _scanStream = null; }
+  scannerVideo.srcObject = null;
+}
+
+function showScanError(msg) {
+  _scannerStep('error');
+  document.getElementById('scanner-error-msg').textContent = msg || 'Could not read card. Please try again.';
+}
+
+async function captureAndExtract() {
+  if (!_scanStream) return;
+  _scannerStep('processing');
+
+  // Capture frame from video
+  const ctx = scannerCanvas.getContext('2d');
+  scannerCanvas.width  = scannerVideo.videoWidth  || 640;
+  scannerCanvas.height = scannerVideo.videoHeight || 480;
+  ctx.drawImage(scannerVideo, 0, 0, scannerCanvas.width, scannerCanvas.height);
+  const imageB64 = scannerCanvas.toDataURL('image/jpeg', 0.92).split(',')[1];
+
+  try {
+    const res  = await fetch('/scan-id', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image: imageB64 }),
+    });
+    const json = await res.json();
+    if (!json.success) { showScanError(json.error); return; }
+
+    _scanExtracted = json.data;
+    renderScanResults(json.data);
+    _scannerStep('results');
+  } catch (err) {
+    showScanError('Network error — please try again.');
+  }
+}
+
+function renderScanResults(data) {
+  const labels = {
+    name: 'Full Name', id_number: 'ID / Permit Number',
+    date_of_birth: 'Date of Birth', nationality: 'Nationality',
+    expiry_date: 'Expiry Date', address: 'Address',
+    document_type: 'Document Type', gender: 'Gender',
+    place_of_birth: 'Place of Birth',
+  };
+  const box = document.getElementById('scan-results');
+  box.innerHTML = Object.entries(data)
+    .filter(([, v]) => v)
+    .map(([k, v]) => `
+      <div class="scan-field">
+        <span class="scan-field-label">${labels[k] || k}</span>
+        <span class="scan-field-value">${v}</span>
+      </div>`).join('');
+}
+
+function applyScanResults() {
+  if (!_scanExtracted) return;
+  const d = _scanExtracted;
+  if (d.name)      { citizenNameEl.value  = d.name;      validateForm(); }
+  if (d.id_number) { citizenIdEl.value    = d.id_number; }
+  if (d.nationality || d.place_of_birth) {
+    // append to phone field or a note — just store in a data attr for the session
+    citizenPhoneEl.dataset.nationality = d.nationality || '';
+  }
+  closeScanner();
+
+  // Flash the filled fields so the user sees what changed
+  [citizenNameEl, citizenIdEl].forEach(el => {
+    if (el.value) {
+      el.classList.add('field-scanned');
+      setTimeout(() => el.classList.remove('field-scanned'), 2000);
+    }
+  });
+}
+
+// Wire up buttons
+scanIdBtn?.addEventListener('click', openScanner);
+scannerCloseBtn?.addEventListener('click', closeScanner);
+scannerCancelBtn?.addEventListener('click', closeScanner);
+captureBtn?.addEventListener('click', captureAndExtract);
+scanUseBtn?.addEventListener('click', applyScanResults);
+scanRetryBtn?.addEventListener('click', () => _scannerStep('camera'));
+scanErrorRetryBtn?.addEventListener('click', () => _scannerStep('camera'));
+scanErrorCancelBtn?.addEventListener('click', closeScanner);
+
+// Close on backdrop click
+scannerModal?.addEventListener('click', e => { if (e.target === scannerModal) closeScanner(); });
+
 // ── Initialise ────────────────────────────────────────────────
 initAuth();
