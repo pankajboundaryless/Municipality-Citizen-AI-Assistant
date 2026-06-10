@@ -41,9 +41,9 @@ def _setup_logging() -> logging.Logger:
         format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
-    logging.getLogger("gemini_live").setLevel(logging.DEBUG)
+    logging.getLogger("gemini_live").setLevel(logging.INFO)
     _log = logging.getLogger(__name__)
-    _log.setLevel(logging.DEBUG)
+    _log.setLevel(logging.INFO)
     if log_file:
         _log.info(f"File logging enabled → {log_file}")
     return _log

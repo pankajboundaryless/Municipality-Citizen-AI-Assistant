@@ -57,6 +57,8 @@ class UiPathMaestroClient:
     _CLOUD_BASE = "https://cloud.uipath.com"
     _POLL_INTERVAL_S = 2
     _POLL_MAX_ATTEMPTS = 90  # up to 3 minutes
+    # Disable brotli — not supported by all aiohttp builds
+    _HEADERS_BASE = {"Accept-Encoding": "gzip, deflate"}
 
     def __init__(self, config: UiPathMaestroConfig) -> None:
         self.cfg = config
@@ -148,7 +150,7 @@ class UiPathMaestroClient:
             "client_secret": self.cfg.client_secret,
             "scope": "OR.Execution OR.Folders OR.Jobs OR.Robots.Read",
         }
-        async with aiohttp.ClientSession() as s:
+        async with aiohttp.ClientSession(headers=self._HEADERS_BASE) as s:
             async with s.post(self._TOKEN_URL, data=payload) as r:
                 if r.status != 200:
                     raise RuntimeError(f"UiPath auth error {r.status}: {await r.text()}")
@@ -170,7 +172,7 @@ class UiPathMaestroClient:
             "$select": "Id,DisplayName",
         }
         headers = {"Authorization": f"Bearer {token}"}
-        async with aiohttp.ClientSession() as s:
+        async with aiohttp.ClientSession(headers=self._HEADERS_BASE) as s:
             async with s.get(url, headers=headers, params=params) as r:
                 if r.status != 200:
                     logger.warning(f"Folder lookup HTTP {r.status}: {await r.text()}")
@@ -203,7 +205,7 @@ class UiPathMaestroClient:
                 "$select": "Key,Name,ProcessKey",
                 "$top": "1",
             }
-            async with aiohttp.ClientSession() as s:
+            async with aiohttp.ClientSession(headers=self._HEADERS_BASE) as s:
                 async with s.get(url, headers=headers, params=params) as r:
                     if r.status != 200:
                         logger.warning(f"Release lookup by {field} HTTP {r.status}")
@@ -250,7 +252,7 @@ class UiPathMaestroClient:
             start_info["ProcessKey"] = self.cfg.process_key
 
         body = {"startInfo": start_info}
-        async with aiohttp.ClientSession() as s:
+        async with aiohttp.ClientSession(headers=self._HEADERS_BASE) as s:
             async with s.post(url, json=body, headers=headers) as r:
                 if r.status not in (200, 201):
                     raise RuntimeError(f"StartJobs HTTP {r.status}: {await r.text()}")
@@ -269,7 +271,7 @@ class UiPathMaestroClient:
         for attempt in range(self._POLL_MAX_ATTEMPTS):
             await asyncio.sleep(self._POLL_INTERVAL_S)
             try:
-                async with aiohttp.ClientSession() as s:
+                async with aiohttp.ClientSession(headers=self._HEADERS_BASE) as s:
                     async with s.get(url, headers=headers) as r:
                         if r.status != 200:
                             logger.debug(f"Poll {attempt+1}: HTTP {r.status}")
