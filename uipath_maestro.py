@@ -40,6 +40,8 @@ class UiPathMaestroConfig:
         self.client_secret: str = os.getenv("UIPATH_CLIENT_SECRET", "")
         self.process_key: str = os.getenv("UIPATH_PROCESS_KEY", "")
         self.folder_name: str = os.getenv("UIPATH_FOLDER_NAME", "Default")
+        # Allow staging or on-prem: set UIPATH_BASE_URL=https://staging.uipath.com
+        self.base_url: str = os.getenv("UIPATH_BASE_URL", "https://cloud.uipath.com").rstrip("/")
 
     @property
     def is_configured(self) -> bool:
@@ -53,8 +55,6 @@ class UiPathMaestroConfig:
 class UiPathMaestroClient:
     """Async client for UiPath Cloud Orchestrator / Maestro job execution."""
 
-    _TOKEN_URL = "https://cloud.uipath.com/identity_/connect/token"
-    _CLOUD_BASE = "https://cloud.uipath.com"
     _POLL_INTERVAL_S = 2
     _POLL_MAX_ATTEMPTS = 90  # up to 3 minutes
     # Disable brotli — not supported by all aiohttp builds
@@ -150,8 +150,9 @@ class UiPathMaestroClient:
             "client_secret": self.cfg.client_secret,
             "scope": "OR.Execution OR.Folders OR.Jobs OR.Robots.Read",
         }
+        token_url = f"{self.cfg.base_url}/identity_/connect/token"
         async with aiohttp.ClientSession(headers=self._HEADERS_BASE) as s:
-            async with s.post(self._TOKEN_URL, data=payload) as r:
+            async with s.post(token_url, data=payload) as r:
                 if r.status != 200:
                     raise RuntimeError(f"UiPath auth error {r.status}: {await r.text()}")
                 data = await r.json()
@@ -164,7 +165,7 @@ class UiPathMaestroClient:
         if self._folder_id is not None:
             return self._folder_id
         url = (
-            f"{self._CLOUD_BASE}/{self.cfg.organization}/{self.cfg.tenant}"
+            f"{self.cfg.base_url}/{self.cfg.organization}/{self.cfg.tenant}"
             "/orchestrator_/odata/Folders"
         )
         params = {
@@ -193,7 +194,7 @@ class UiPathMaestroClient:
         if self._release_key is not None:
             return self._release_key
         url = (
-            f"{self._CLOUD_BASE}/{self.cfg.organization}/{self.cfg.tenant}"
+            f"{self.cfg.base_url}/{self.cfg.organization}/{self.cfg.tenant}"
             "/orchestrator_/odata/Releases"
         )
         headers: Dict[str, str] = {"Authorization": f"Bearer {token}"}
@@ -231,7 +232,7 @@ class UiPathMaestroClient:
         input_args: Dict[str, Any],
     ) -> int:
         url = (
-            f"{self._CLOUD_BASE}/{self.cfg.organization}/{self.cfg.tenant}"
+            f"{self.cfg.base_url}/{self.cfg.organization}/{self.cfg.tenant}"
             "/orchestrator_/odata/Jobs/UiPath.Server.Configuration.OData.StartJobs"
         )
         headers: Dict[str, str] = {
@@ -263,7 +264,7 @@ class UiPathMaestroClient:
 
     async def _poll_until_done(self, token: str, job_id: int) -> str:
         url = (
-            f"{self._CLOUD_BASE}/{self.cfg.organization}/{self.cfg.tenant}"
+            f"{self.cfg.base_url}/{self.cfg.organization}/{self.cfg.tenant}"
             f"/orchestrator_/odata/Jobs({job_id})"
         )
         headers = {"Authorization": f"Bearer {token}"}
