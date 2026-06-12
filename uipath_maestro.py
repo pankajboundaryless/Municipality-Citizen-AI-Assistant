@@ -266,7 +266,7 @@ class UiPathMaestroClient:
         headers: Dict[str, str] = {"Authorization": f"Bearer {token}"}
         if folder_id is not None:
             headers["X-UIPATH-OrganizationUnitId"] = str(folder_id)
-        async with aiohttp.ClientSession() as s:
+        async with aiohttp.ClientSession(headers=self._HEADERS_BASE) as s:
             async with s.get(url, headers=headers, params=params) as r:
                 if r.status != 200:
                     logger.warning(f"Bucket lookup HTTP {r.status}: {await r.text()}")
@@ -307,7 +307,7 @@ class UiPathMaestroClient:
         if folder_id is not None:
             headers["X-UIPATH-OrganizationUnitId"] = str(folder_id)
         logger.debug(f"GetWriteUri → GET {uri_url} | params={params}")
-        async with aiohttp.ClientSession() as s:
+        async with aiohttp.ClientSession(headers=self._HEADERS_BASE) as s:
             async with s.get(uri_url, headers=headers, params=params) as r:
                 body = await r.text()
                 if r.status != 200:
@@ -328,7 +328,7 @@ class UiPathMaestroClient:
         for k, v in zip(resp_headers.get("Keys", []), resp_headers.get("Values", [])):
             upload_headers[k] = v
 
-        async with aiohttp.ClientSession() as s:
+        async with aiohttp.ClientSession(headers=self._HEADERS_BASE) as s:
             method = getattr(s, verb.lower(), s.put)
             async with method(write_uri, data=data, headers=upload_headers) as r:
                 if r.status not in (200, 201):

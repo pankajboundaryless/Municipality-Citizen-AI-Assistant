@@ -13,15 +13,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+      # Cache .python_packages keyed on requirements.txt hash + Python version.
+      # Cache hit → skip Docker pip install entirely (saves ~2-3 min per deploy).
+      # Cache miss (requirements.txt changed) → re-run Docker install and save new cache.
+      - name: Cache Python packages
+        id: cache-packages
+        uses: actions/cache@v4
         with:
-          python-version: '3.12'
+          path: .python_packages
+          key: python-3.12-bullseye-${{ hashFiles('requirements.txt') }}
 
-      # Install deps inside Debian Bullseye container — same GLIBC as Azure
-      # App Service Python 3.12, so compiled extensions (cryptography etc.)
-      # are binary-compatible at runtime.
       - name: Install dependencies into package folder
+        if: steps.cache-packages.outputs.cache-hit != 'true'
         run: |
           docker run --rm \
             -v "$PWD:/app" \
