@@ -17989,3 +17989,139 @@ Requested standard processing."""
 2026-06-09 13:03:59  DEBUG     gemini_live  send_text task cancelled
 2026-06-09 13:03:59  INFO      gemini_live  Gemini Live session closed
 2026-06-09 13:03:59  INFO      __main__  Session cleaned up: 67f188e1-d2f2-4f59-a5be-0219633460da
+2026-06-12 10:14:52  ERROR     uipath_maestro  UiPath submission failed: StartJobs HTTP 400: {"message":"The field InputArguments must be a string or array type with a maximum length of '10000'.","errorCode":0,"traceId":"00-487f0876a1602867c013e8e1a72e0f5a-856b0aa05ab7975c-00"}
+Traceback (most recent call last):
+  File "C:\Users\stefa\Desktop\AI\gemini-live-genai-python-sdk\uipath_maestro.py", line 126, in submit
+    job_id = await self._start_job(token, folder_id, release_key, input_args)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\stefa\Desktop\AI\gemini-live-genai-python-sdk\uipath_maestro.py", line 256, in _start_job
+    raise RuntimeError(f"StartJobs HTTP {r.status}: {await r.text()}")
+RuntimeError: StartJobs HTTP 400: {"message":"The field InputArguments must be a string or array type with a maximum length of '10000'.","errorCode":0,"traceId":"00-487f0876a1602867c013e8e1a72e0f5a-856b0aa05ab7975c-00"}
+2026-06-12 10:15:06  ERROR     __main__  receive_from_client error: Cannot call "receive" once a disconnect message has been received.
+2026-06-12 10:15:55  ERROR     gemini_live  receive_loop error: APIError: 1007 None. Request contains an invalid argument.
+Traceback (most recent call last):
+  File "C:\Users\stefa\Desktop\AI\gemini-live-genai-python-sdk\.venv\Lib\site-packages\google\genai\live.py", line 537, in _receive
+    raw_response = await self._ws.recv(decode=False)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\stefa\Desktop\AI\gemini-live-genai-python-sdk\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 324, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: received 1007 (invalid frame payload data) Request contains an invalid argument.; then sent 1007 (invalid frame payload data) Request contains an invalid argument.
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\stefa\Desktop\AI\gemini-live-genai-python-sdk\gemini_live.py", line 93, in receive_loop
+    async for response in session.receive():
+    ...<62 lines>...
+            await session.send_tool_response(function_responses=function_responses)
+  File "C:\Users\stefa\Desktop\AI\gemini-live-genai-python-sdk\.venv\Lib\site-packages\google\genai\live.py", line 456, in receive
+    while result := await self._receive():
+                    ^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\stefa\Desktop\AI\gemini-live-genai-python-sdk\.venv\Lib\site-packages\google\genai\live.py", line 547, in _receive
+    errors.APIError.raise_error(code, reason, None)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\stefa\Desktop\AI\gemini-live-genai-python-sdk\.venv\Lib\site-packages\google\genai\errors.py", line 188, in raise_error
+    raise cls(status_code, response_json, response)
+google.genai.errors.APIError: 1007 None. Request contains an invalid argument.
+
+2026-06-12 10:26:33  WARNING   uipath_maestro  Bucket lookup HTTP 403: {"message":"You are not authorized!","errorCode":0,"result":null,"targetUrl":null,"success":false,"error":{"code":0,"message":"You are not authorized!","details":"You are not allowed to perform this operation.","validationErrors":null},"unAuthorizedRequest":true,"__abp":true}
+2026-06-12 10:28:20  WARNING   uipath_maestro  Bucket lookup HTTP 403: {"message":"You are not authorized!","errorCode":0,"result":null,"targetUrl":null,"success":false,"error":{"code":0,"message":"You are not authorized!","details":"You are not allowed to perform this operation.","validationErrors":null},"unAuthorizedRequest":true,"__abp":true}
+2026-06-12 10:28:20  WARNING   uipath_maestro  Storage bucket not found — documents will not be uploaded
+2026-06-12 10:28:20  ERROR     uipath_maestro  UiPath submission failed: StartJobs HTTP 409: {"message":"Could not find a machine with Unattended or NonProduction runtimes in the current folder","errorCode":2818,"traceId":"00-09ed8881ddebabe387f9447f0ecf9466-7a55bcaa1792c366-00"}
+Traceback (most recent call last):
+  File "C:\Users\stefa\Desktop\AI\gemini-live-genai-python-sdk\uipath_maestro.py", line 148, in submit
+    job_id = await self._start_job(token, folder_id, release_key, input_args)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\stefa\Desktop\AI\gemini-live-genai-python-sdk\uipath_maestro.py", line 350, in _start_job
+    raise RuntimeError(f"StartJobs HTTP {r.status}: {await r.text()}")
+RuntimeError: StartJobs HTTP 409: {"message":"Could not find a machine with Unattended or NonProduction runtimes in the current folder","errorCode":2818,"traceId":"00-09ed8881ddebabe387f9447f0ecf9466-7a55bcaa1792c366-00"}
+2026-06-12 10:28:28  ERROR     __main__  receive_from_client error: Cannot call "receive" once a disconnect message has been received.
+2026-06-12 10:41:31  WARNING   uipath_maestro  Failed to upload 'captured_photo_104108.jpg' to bucket: GetWriteUri HTTP 405: 
+2026-06-12 10:42:39  ERROR     __main__  receive_from_client error: Cannot call "receive" once a disconnect message has been received.
+2026-06-12 10:42:48  ERROR     gemini_live  receive_loop error: APIError: 1007 None. Request contains an invalid argument.
+Traceback (most recent call last):
+  File "C:\Users\stefa\Desktop\AI\gemini-live-genai-python-sdk\.venv\Lib\site-packages\google\genai\live.py", line 537, in _receive
+    raw_response = await self._ws.recv(decode=False)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\stefa\Desktop\AI\gemini-live-genai-python-sdk\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 324, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: received 1007 (invalid frame payload data) Request contains an invalid argument.; then sent 1007 (invalid frame payload data) Request contains an invalid argument.
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\stefa\Desktop\AI\gemini-live-genai-python-sdk\gemini_live.py", line 93, in receive_loop
+    async for response in session.receive():
+    ...<62 lines>...
+            await session.send_tool_response(function_responses=function_responses)
+  File "C:\Users\stefa\Desktop\AI\gemini-live-genai-python-sdk\.venv\Lib\site-packages\google\genai\live.py", line 456, in receive
+    while result := await self._receive():
+                    ^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\stefa\Desktop\AI\gemini-live-genai-python-sdk\.venv\Lib\site-packages\google\genai\live.py", line 547, in _receive
+    errors.APIError.raise_error(code, reason, None)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\stefa\Desktop\AI\gemini-live-genai-python-sdk\.venv\Lib\site-packages\google\genai\errors.py", line 188, in raise_error
+    raise cls(status_code, response_json, response)
+google.genai.errors.APIError: 1007 None. Request contains an invalid argument.
+
+2026-06-12 10:48:24  ERROR     gemini_live  Gemini Live session error: APIError: 1011 None. Authentication backend unavailable.
+Traceback (most recent call last):
+  File "C:\Users\stefa\Desktop\AI\gemini-live-genai-python-sdk\.venv\Lib\site-packages\google\genai\live.py", line 1107, in connect
+    raw_response = await ws.recv(decode=False)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\stefa\Desktop\AI\gemini-live-genai-python-sdk\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 324, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: received 1011 (internal error) Authentication backend unavailable.; then sent 1011 (internal error) Authentication backend unavailable.
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\stefa\Desktop\AI\gemini-live-genai-python-sdk\gemini_live.py", line 49, in start_session
+    async with self.client.aio.live.connect(model=self.model, config=config) as session:
+               ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Python314\Lib\contextlib.py", line 214, in __aenter__
+    return await anext(self.gen)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\stefa\Desktop\AI\gemini-live-genai-python-sdk\.venv\Lib\site-packages\google\genai\live.py", line 1117, in connect
+    errors.APIError.raise_error(code, reason, None)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\stefa\Desktop\AI\gemini-live-genai-python-sdk\.venv\Lib\site-packages\google\genai\errors.py", line 188, in raise_error
+    raise cls(status_code, response_json, response)
+google.genai.errors.APIError: 1011 None. Authentication backend unavailable.
+
+2026-06-12 10:48:24  ERROR     __main__  Gemini session error: APIError: 1011 None. Authentication backend unavailable.
+Traceback (most recent call last):
+  File "C:\Users\stefa\Desktop\AI\gemini-live-genai-python-sdk\.venv\Lib\site-packages\google\genai\live.py", line 1107, in connect
+    raw_response = await ws.recv(decode=False)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\stefa\Desktop\AI\gemini-live-genai-python-sdk\.venv\Lib\site-packages\websockets\asyncio\connection.py", line 324, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: received 1011 (internal error) Authentication backend unavailable.; then sent 1011 (internal error) Authentication backend unavailable.
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\stefa\Desktop\AI\gemini-live-genai-python-sdk\main.py", line 420, in websocket_endpoint
+    async for event in gemini.start_session(
+    ...<14 lines>...
+                break
+  File "C:\Users\stefa\Desktop\AI\gemini-live-genai-python-sdk\gemini_live.py", line 49, in start_session
+    async with self.client.aio.live.connect(model=self.model, config=config) as session:
+               ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Python314\Lib\contextlib.py", line 214, in __aenter__
+    return await anext(self.gen)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\stefa\Desktop\AI\gemini-live-genai-python-sdk\.venv\Lib\site-packages\google\genai\live.py", line 1117, in connect
+    errors.APIError.raise_error(code, reason, None)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\stefa\Desktop\AI\gemini-live-genai-python-sdk\.venv\Lib\site-packages\google\genai\errors.py", line 188, in raise_error
+    raise cls(status_code, response_json, response)
+google.genai.errors.APIError: 1011 None. Authentication backend unavailable.
+
+2026-06-12 10:50:41  WARNING   uipath_maestro  Failed to upload 'captured_photo_105030.jpg' to bucket: GetWriteUri HTTP 405: 
+2026-06-12 10:51:11  ERROR     __main__  receive_from_client error: Cannot call "receive" once a disconnect message has been received.
+2026-06-12 10:54:30  WARNING   uipath_maestro  Failed to upload 'captured_photo_105413.jpg' to bucket: GetWriteUri HTTP 404: 
+2026-06-12 10:54:48  ERROR     __main__  receive_from_client error: Cannot call "receive" once a disconnect message has been received.
+2026-06-12 10:56:33  WARNING   uipath_maestro  Failed to upload 'captured_photo_105619.jpg' to bucket: GetWriteUri HTTP 404: 
+2026-06-12 10:56:50  ERROR     __main__  receive_from_client error: Cannot call "receive" once a disconnect message has been received.
+2026-06-12 11:55:55  ERROR     __main__  receive_from_client error: Cannot call "receive" once a disconnect message has been received.

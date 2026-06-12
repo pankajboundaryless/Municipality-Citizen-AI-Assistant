@@ -10,6 +10,8 @@ before the real call is made.
 import asyncio
 import json
 import logging
+import mimetypes
+import pathlib
 import uuid
 
 import aiohttp
@@ -25,6 +27,11 @@ logging.basicConfig(level=logging.DEBUG, format="%(levelname)s  %(name)s  %(mess
 
 SESSION_ID = str(uuid.uuid4())
 SUBJECT    = "Passport Renewal"
+
+# Mock document: read log.txt from the project root (or an empty fallback)
+_LOG_FILE = pathlib.Path(__file__).parent / "log.txt"
+MOCK_DOCUMENT_NAME = "log.txt"
+MOCK_DOCUMENT_DATA = _LOG_FILE.read_bytes() if _LOG_FILE.exists() else b"mock document content"
 
 MOCK_CITIZEN_DATA = {
     "name": "Maria Rossi",
@@ -58,6 +65,7 @@ def mask(value: str) -> str:
 
 async def step_config(cfg: UiPathMaestroConfig) -> bool:
     section("1 · Config (from .env)")
+    print(f"  UIPATH_URL           = {cfg.base_url}")
     print(f"  UIPATH_ORGANIZATION  = {cfg.organization  or '(not set)'}")
     print(f"  UIPATH_TENANT        = {cfg.tenant        or '(not set)'}")
     print(f"  UIPATH_CLIENT_ID     = {cfg.client_id     or '(not set)'}")
@@ -72,12 +80,12 @@ async def step_config(cfg: UiPathMaestroConfig) -> bool:
 
 async def step_token(cfg: UiPathMaestroConfig) -> str | None:
     section("2 · OAuth2 token")
-    url = "https://cloud.uipath.com/identity_/connect/token"
+    url = f"{cfg.base_url}/identity_/connect/token"
     payload = {
         "grant_type":    "client_credentials",
         "client_id":     cfg.client_id,
         "client_secret": cfg.client_secret,
-        "scope":         "OR.Execution OR.Folders OR.Jobs OR.Robots.Read",
+        "scope":         "OR.Execution OR.Folders OR.Jobs OR.Robots.Read OR.Buckets.Read OR.Buckets.Write OR.Administration",
     }
     print(f"  POST {url}")
     print(f"  scope: {payload['scope']}")
@@ -96,7 +104,7 @@ async def step_token(cfg: UiPathMaestroConfig) -> str | None:
 async def step_folder(cfg: UiPathMaestroConfig, token: str) -> int | None:
     section("3 · Folder lookup")
     url = (
-        f"https://cloud.uipath.com/{cfg.organization}/{cfg.tenant}"
+        f"{cfg.base_url}/{cfg.organization}/{cfg.tenant}"
         "/orchestrator_/odata/Folders"
     )
     params = {
@@ -146,7 +154,7 @@ async def step_release(
 ) -> str | None:
     section("4 · Release lookup (process name → GUID)")
     url = (
-        f"https://cloud.uipath.com/{cfg.organization}/{cfg.tenant}"
+        f"{cfg.base_url}/{cfg.organization}/{cfg.tenant}"
         "/orchestrator_/odata/Releases"
     )
     headers = {
@@ -186,15 +194,111 @@ async def step_release(
     return None
 
 
+async def step_bucket(cfg: UiPathMaestroConfig, token: str, folder_id: int) -> int | None:
+    section("5 · Bucket lookup")
+    url = (
+        f"{cfg.base_url}/{cfg.organization}/{cfg.tenant}"
+        "/orchestrator_/odata/Buckets"
+    )
+    params = {
+        "$filter": f"Name eq '{cfg.bucket_name}'",
+        "$select": "Id,Name",
+        "$top":    "1",
+    }
+    headers = {
+        "Authorization":               f"Bearer {token}",
+        "X-UIPATH-OrganizationUnitId": str(folder_id),
+    }
+    print(f"  GET {url}")
+    print(f"  filter: {params['$filter']}")
+    async with aiohttp.ClientSession() as s:
+        async with s.get(url, headers=headers, params=params) as r:
+            body = await r.text()
+            print(f"  HTTP {r.status}")
+            if r.status != 200:
+                print(f"  RESPONSE: {body}")
+                return None
+            items = json.loads(body).get("value", [])
+            if not items:
+                print(f"  Bucket '{cfg.bucket_name}' not found in folder.")
+                return None
+            bucket_id = items[0]["Id"]
+            print(f"  Bucket ID: {bucket_id}  ({items[0]['Name']})")
+            return bucket_id
+
+
+async def step_upload(
+    cfg: UiPathMaestroConfig,
+    token: str,
+    folder_id: int,
+    bucket_id: int,
+) -> list[dict] | None:
+    section("6 · Upload mock document to bucket")
+    file_path = f"{SESSION_ID}/{MOCK_DOCUMENT_NAME}"
+    print(f"  File      : {MOCK_DOCUMENT_NAME}  ({len(MOCK_DOCUMENT_DATA)} bytes)")
+    print(f"  Bucket path: {file_path}")
+
+    content_type, _ = mimetypes.guess_type(MOCK_DOCUMENT_NAME)
+    if not content_type:
+        content_type = "application/octet-stream"
+
+    # Step 6a — get pre-signed write URI (contentType is a required parameter)
+    uri_url = (
+        f"{cfg.base_url}/{cfg.organization}/{cfg.tenant}"
+        f"/orchestrator_/odata/Buckets({bucket_id})"
+        f"/UiPath.Server.Configuration.OData.GetWriteUri"
+    )
+    params = {"path": file_path, "contentType": content_type}
+    headers = {
+        "Authorization":               f"Bearer {token}",
+        "X-UIPATH-OrganizationUnitId": str(folder_id),
+    }
+    print(f"\n  GET {uri_url}")
+    print(f"  params: {params}")
+    async with aiohttp.ClientSession() as s:
+        async with s.get(uri_url, headers=headers, params=params) as r:
+            body = await r.text()
+            print(f"  HTTP {r.status}")
+            if r.status != 200:
+                print(f"  RESPONSE: {body}")
+                return None
+            write_info = json.loads(body)
+
+    write_uri = write_info.get("Uri") or write_info.get("uri", "")
+    verb: str = write_info.get("Verb", "PUT")
+    print(f"  Write URI obtained: {write_uri[:80]}...")
+    print(f"  Verb: {verb}")
+
+    # Step 6b — upload using verb and headers from response; no Authorization header
+    upload_headers: dict = {"Content-Type": content_type}
+    resp_headers = write_info.get("Headers", {})
+    for k, v in zip(resp_headers.get("Keys", []), resp_headers.get("Values", [])):
+        upload_headers[k] = v
+    print(f"  Upload headers: {upload_headers}")
+    print(f"\n  {verb} {write_uri[:80]}...")
+    async with aiohttp.ClientSession() as s:
+        method = getattr(s, verb.lower(), s.put)
+        async with method(write_uri, data=MOCK_DOCUMENT_DATA, headers=upload_headers) as r:
+            body = await r.text()
+            print(f"  HTTP {r.status}")
+            if r.status not in (200, 201):
+                print(f"  RESPONSE: {body}")
+                return None
+
+    print(f"  Upload successful.")
+    return [{"name": MOCK_DOCUMENT_NAME, "path": file_path}]
+
+
 async def step_start_job(
     cfg: UiPathMaestroConfig,
     token: str,
     folder_id: int,
     release_key: str | None,
+    uploaded_docs: list[dict] | None = None,
 ) -> int | None:
-    section("5 · Start job")
+    section("7 · Start job")
     url = (
-        f"https://cloud.uipath.com/{cfg.organization}/{cfg.tenant}"
+        f"{cfg.base_url}/{cfg.organization}/{cfg.tenant}"
         "/orchestrator_/odata/Jobs/UiPath.Server.Configuration.OData.StartJobs"
     )
     headers = {
@@ -203,11 +307,12 @@ async def step_start_job(
         "X-UIPATH-OrganizationUnitId": str(folder_id),
     }
 
+    citizen = {**MOCK_CITIZEN_DATA, "documentCount": len(uploaded_docs or [])}
     input_args = {
         "in_SessionId":   SESSION_ID,
         "in_Subject":     SUBJECT,
-        "in_CitizenData": json.dumps(MOCK_CITIZEN_DATA, ensure_ascii=False),
-        "in_Documents":   json.dumps([]),
+        "in_CitizenData": json.dumps(citizen, ensure_ascii=False),
+        "in_Documents":   json.dumps(uploaded_docs or []),
     }
 
     start_info: dict = {
@@ -257,9 +362,9 @@ async def step_start_job(
 
 
 async def step_poll(cfg: UiPathMaestroConfig, token: str, job_id: int) -> str:
-    section("6 · Polling job state")
+    section("8 · Polling job state")
     url = (
-        f"https://cloud.uipath.com/{cfg.organization}/{cfg.tenant}"
+        f"{cfg.base_url}/{cfg.organization}/{cfg.tenant}"
         f"/orchestrator_/odata/Jobs({job_id})"
     )
     headers = {"Authorization": f"Bearer {token}"}
@@ -305,7 +410,14 @@ async def main() -> None:
     release_key = await step_release(cfg, token, folder_id)
     # release_key may be None — will fall back to ProcessKey in StartJobs
 
-    job_id = await step_start_job(cfg, token, folder_id, release_key)
+    bucket_id = await step_bucket(cfg, token, folder_id)
+    # bucket_id may be None — job will still start without documents
+
+    uploaded_docs = None
+    if bucket_id:
+        uploaded_docs = await step_upload(cfg, token, folder_id, bucket_id)
+
+    job_id = await step_start_job(cfg, token, folder_id, release_key, uploaded_docs)
     if not job_id:
         return
 

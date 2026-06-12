@@ -30,6 +30,7 @@ def _setup_logging() -> logging.Logger:
     handlers: list[logging.Handler] = [logging.StreamHandler()]
     if log_file:
         file_handler = logging.FileHandler(log_file, encoding="utf-8")
+        file_handler.setLevel(logging.WARNING)
         file_handler.setFormatter(logging.Formatter(
             "%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
             datefmt="%Y-%m-%d %H:%M:%S",
@@ -464,12 +465,16 @@ async def websocket_endpoint(
 
     async def handle_submit(subject: str, summary: str) -> str:
         """Tool handler: forwards citizen request to UiPath Maestro."""
-        # Uploaded documents (raw bytes)
-        docs: list[bytes] = [d["data"] for d in session_data.get("documents", [])]
-        # Captured camera photos (base64 → bytes)
+        docs: list[dict] = [
+            {"name": d["filename"], "data": d["data"]}
+            for d in session_data.get("documents", [])
+        ]
         for img in session_data.get("captured_images", []):
             try:
-                docs.append(base64.b64decode(img["data_b64"]))
+                docs.append({
+                    "name": img["filename"],
+                    "data": base64.b64decode(img["data_b64"]),
+                })
             except Exception as exc:
                 logger.warning(f"Could not decode captured image '{img.get('filename')}': {exc}")
         enriched = {

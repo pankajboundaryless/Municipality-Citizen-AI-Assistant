@@ -34,14 +34,20 @@ class UiPathMaestroConfig:
     """Reads UiPath configuration from environment variables."""
 
     def __init__(self) -> None:
+        self.base_url: str = os.getenv("UIPATH_URL", "https://cloud.uipath.com").rstrip("/")
         self.organization: str = os.getenv("UIPATH_ORGANIZATION", "")
         self.tenant: str = os.getenv("UIPATH_TENANT", "")
         self.client_id: str = os.getenv("UIPATH_CLIENT_ID", "")
         self.client_secret: str = os.getenv("UIPATH_CLIENT_SECRET", "")
         self.process_key: str = os.getenv("UIPATH_PROCESS_KEY", "")
         self.folder_name: str = os.getenv("UIPATH_FOLDER_NAME", "Default")
-        # Allow staging or on-prem: set UIPATH_BASE_URL=https://staging.uipath.com
-        self.base_url: str = os.getenv("UIPATH_BASE_URL", "https://cloud.uipath.com").rstrip("/")
+        # UIPATH_BASE_URL takes priority; fall back to UIPATH_URL (Stefano's alias)
+        self.base_url: str = (
+            os.getenv("UIPATH_BASE_URL") or
+            os.getenv("UIPATH_URL") or
+            "https://cloud.uipath.com"
+        ).rstrip("/")
+        self.bucket_name: str = os.getenv("UIPATH_BUCKET_NAME", "Document_Repository")
 
     @property
     def is_configured(self) -> bool:
@@ -62,11 +68,13 @@ class UiPathMaestroClient:
 
     def __init__(self, config: UiPathMaestroConfig) -> None:
         self.cfg = config
+        self._token_url = f"{config.base_url}/identity_/connect/token"
         # Cached auth state — populated by warmup(), reused by submit()
         self._token: Optional[str] = None
         self._token_expiry: float = 0.0
         self._folder_id: Optional[int] = None
         self._release_key: Optional[str] = None
+        self._bucket_id: Optional[int] = None
 
     # -------------------------------------------------------------------------
     # Public API
@@ -83,7 +91,8 @@ class UiPathMaestroClient:
             token = await self._get_token()
             folder_id = await self._resolve_folder_id(token)
             await self._resolve_release_key(token, folder_id)
-            logger.info("UiPath warmup complete: token + folder + release key cached")
+            await self._resolve_bucket_id(token, folder_id)
+            logger.info("UiPath warmup complete: token + folder + release key + bucket cached")
         except Exception as exc:
             logger.warning(f"UiPath warmup failed (will retry on submit): {exc}")
 
@@ -92,12 +101,13 @@ class UiPathMaestroClient:
         session_id: str,
         subject: str,
         citizen_data: Dict[str, Any],
-        documents: Optional[List[bytes]] = None,
+        documents: Optional[List[Dict[str, Any]]] = None,
     ) -> str:
         """
         Start a UiPath job and wait for completion.
+        documents: list of {"name": str, "data": bytes} dicts.
+        Files are uploaded to the storage bucket; paths are passed via in_Documents.
         Returns the out_Reply string from the job output arguments.
-        Uses cached token/folder/release if warmup() already ran.
         """
         if not self.cfg.is_configured:
             logger.warning("UiPath Maestro not configured — returning placeholder.")
@@ -112,17 +122,35 @@ class UiPathMaestroClient:
             folder_id = await self._resolve_folder_id(token)
             release_key = await self._resolve_release_key(token, folder_id)
 
-            docs_b64: List[str] = [
-                base64.b64encode(doc).decode()
-                for doc in (documents or [])
-                if isinstance(doc, (bytes, bytearray))
-            ]
+            # Upload documents to storage bucket and collect their paths
+            uploaded_docs: List[Dict[str, str]] = []
+            if documents:
+                bucket_id = await self._resolve_bucket_id(token, folder_id)
+                if bucket_id:
+                    for doc in documents:
+                        name = doc.get("name", f"document_{len(uploaded_docs)}")
+                        data = doc.get("data", b"")
+                        if not data:
+                            continue
+                        bucket_path = f"{session_id}/{name}"
+                        try:
+                            await self._upload_to_bucket(token, folder_id, bucket_id, bucket_path, data)
+                            uploaded_docs.append({"name": name, "path": bucket_path})
+                        except Exception as exc:
+                            logger.warning(f"Failed to upload '{name}' to bucket: {exc}")
+                else:
+                    logger.warning("Storage bucket not found — documents will not be uploaded")
+
+            enriched_citizen = {
+                **citizen_data,
+                "documentCount": len(uploaded_docs),
+            }
 
             input_args: Dict[str, Any] = {
                 "in_SessionId": session_id,
                 "in_Subject": subject,
-                "in_CitizenData": json.dumps(citizen_data, ensure_ascii=False),
-                "in_Documents": json.dumps(docs_b64),
+                "in_CitizenData": json.dumps(enriched_citizen, ensure_ascii=False),
+                "in_Documents": json.dumps(uploaded_docs),
             }
 
             job_id = await self._start_job(token, folder_id, release_key, input_args)
@@ -148,11 +176,10 @@ class UiPathMaestroClient:
             "grant_type": "client_credentials",
             "client_id": self.cfg.client_id,
             "client_secret": self.cfg.client_secret,
-            "scope": "OR.Execution OR.Folders OR.Jobs OR.Robots.Read",
+            "scope": "OR.Execution OR.Folders OR.Jobs OR.Robots.Read OR.Buckets.Read OR.Buckets.Write OR.Administration",
         }
-        token_url = f"{self.cfg.base_url}/identity_/connect/token"
         async with aiohttp.ClientSession(headers=self._HEADERS_BASE) as s:
-            async with s.post(token_url, data=payload) as r:
+            async with s.post(self._token_url, data=payload) as r:
                 if r.status != 200:
                     raise RuntimeError(f"UiPath auth error {r.status}: {await r.text()}")
                 data = await r.json()
@@ -223,6 +250,90 @@ class UiPathMaestroClient:
             f"No release found for '{self.cfg.process_key}' — will use ProcessKey in StartJobs"
         )
         return None
+
+    async def _resolve_bucket_id(self, token: str, folder_id: Optional[int]) -> Optional[int]:
+        if self._bucket_id is not None:
+            return self._bucket_id
+        url = (
+            f"{self.cfg.base_url}/{self.cfg.organization}/{self.cfg.tenant}"
+            "/orchestrator_/odata/Buckets"
+        )
+        params = {
+            "$filter": f"Name eq '{self.cfg.bucket_name}'",
+            "$select": "Id,Name",
+            "$top": "1",
+        }
+        headers: Dict[str, str] = {"Authorization": f"Bearer {token}"}
+        if folder_id is not None:
+            headers["X-UIPATH-OrganizationUnitId"] = str(folder_id)
+        async with aiohttp.ClientSession() as s:
+            async with s.get(url, headers=headers, params=params) as r:
+                if r.status != 200:
+                    logger.warning(f"Bucket lookup HTTP {r.status}: {await r.text()}")
+                    return None
+                items = (await r.json()).get("value", [])
+                if not items:
+                    logger.warning(f"Bucket '{self.cfg.bucket_name}' not found in folder")
+                    return None
+        self._bucket_id = items[0]["Id"]
+        logger.info(f"Bucket resolved: {items[0]['Name']} → id={self._bucket_id}")
+        return self._bucket_id
+
+    async def _upload_to_bucket(
+        self,
+        token: str,
+        folder_id: Optional[int],
+        bucket_id: int,
+        file_path: str,
+        data: bytes,
+    ) -> None:
+        import mimetypes
+
+        file_name = file_path.rsplit("/", 1)[-1]
+        content_type, _ = mimetypes.guess_type(file_name)
+        if not content_type:
+            content_type = "application/octet-stream"
+
+        # Step 1: obtain a pre-signed write URI from Orchestrator.
+        # contentType is a required parameter — its absence causes 404.
+        # OR.Administration scope is required for upload (not just OR.Buckets).
+        uri_url = (
+            f"{self.cfg.base_url}/{self.cfg.organization}/{self.cfg.tenant}"
+            f"/orchestrator_/odata/Buckets({bucket_id})"
+            f"/UiPath.Server.Configuration.OData.GetWriteUri"
+        )
+        params = {"path": file_path, "contentType": content_type}
+        headers: Dict[str, str] = {"Authorization": f"Bearer {token}"}
+        if folder_id is not None:
+            headers["X-UIPATH-OrganizationUnitId"] = str(folder_id)
+        logger.debug(f"GetWriteUri → GET {uri_url} | params={params}")
+        async with aiohttp.ClientSession() as s:
+            async with s.get(uri_url, headers=headers, params=params) as r:
+                body = await r.text()
+                if r.status != 200:
+                    raise RuntimeError(
+                        f"GetWriteUri HTTP {r.status} | url={uri_url} | params={params} | body={body}"
+                    )
+                write_info = json.loads(body)
+
+        write_uri: str = write_info.get("Uri") or write_info.get("uri", "")
+        if not write_uri:
+            raise RuntimeError(f"GetWriteUri returned no URI: {write_info}")
+
+        # Step 2: upload using the verb and headers returned by GetWriteUri.
+        # Do NOT include Authorization — the URI is pre-signed.
+        verb: str = write_info.get("Verb", "PUT")
+        upload_headers: Dict[str, str] = {"Content-Type": content_type}
+        resp_headers = write_info.get("Headers", {})
+        for k, v in zip(resp_headers.get("Keys", []), resp_headers.get("Values", [])):
+            upload_headers[k] = v
+
+        async with aiohttp.ClientSession() as s:
+            method = getattr(s, verb.lower(), s.put)
+            async with method(write_uri, data=data, headers=upload_headers) as r:
+                if r.status not in (200, 201):
+                    raise RuntimeError(f"Bucket upload HTTP {r.status}: {await r.text()}")
+        logger.info(f"Uploaded to bucket: {file_path} ({len(data)} bytes)")
 
     async def _start_job(
         self,
