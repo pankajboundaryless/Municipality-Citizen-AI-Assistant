@@ -18,13 +18,17 @@ jobs:
         with:
           python-version: '3.12'
 
-      # Install all deps into .python_packages so Azure can find them
-      # without running pip install on the B1 worker (avoids OOM kills)
+      # Install deps inside Debian Bullseye container — same GLIBC as Azure
+      # App Service Python 3.12, so compiled extensions (cryptography etc.)
+      # are binary-compatible at runtime.
       - name: Install dependencies into package folder
         run: |
-          pip install --upgrade pip
-          pip install -r requirements.txt \
-            --target=".python_packages/lib/site-packages"
+          docker run --rm \
+            -v "$PWD:/app" \
+            python:3.12-slim-bullseye \
+            pip install -r /app/requirements.txt \
+              --target /app/.python_packages/lib/site-packages \
+              --no-cache-dir
 
       - name: Create deployment zip
         run: |
