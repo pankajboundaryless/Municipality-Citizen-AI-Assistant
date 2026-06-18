@@ -118,6 +118,79 @@ async def get_citizen_documents(email: str) -> list[dict]:
     return []
 
 
+# ── Citizen Sessions (UiPath job cache) ─────────────────────────────────────
+
+async def save_citizen_session(
+    email: str,
+    session_id: str,
+    uipath_job_id: str,
+    uipath_job_key: str,
+    service_type: str,
+    citizen_data: dict,
+    transcript: list,
+    job_status: str = "pending",
+) -> bool:
+    """Upsert the citizen's latest UiPath job + session state into Supabase."""
+    if not _is_configured() or not email:
+        return False
+    payload = {
+        "user_email":      email,
+        "session_id":      session_id,
+        "uipath_job_id":   uipath_job_id,
+        "uipath_job_key":  uipath_job_key,
+        "service_type":    service_type,
+        "job_status":      job_status,
+        "citizen_data":    citizen_data,
+        "transcript":      transcript[-30:],  # keep last 30 messages
+        "updated_at":      datetime.now(timezone.utc).isoformat(),
+    }
+    url = f"{SUPABASE_URL}/rest/v1/citizen_sessions?on_conflict=user_email"
+    headers = {**_headers(), "Prefer": "resolution=merge-duplicates,return=representation"}
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.post(url, headers=headers, content=json.dumps(payload), timeout=8)
+        if r.status_code in (200, 201):
+            logger.info(f"[Supabase] Session saved for {email} — job: {uipath_job_id}")
+            return True
+        logger.warning(f"[Supabase] save_citizen_session HTTP {r.status_code}: {r.text[:200]}")
+    except Exception as exc:
+        logger.warning(f"[Supabase] save_citizen_session failed: {exc}")
+    return False
+
+
+async def get_latest_citizen_session(email: str) -> dict | None:
+    """Return the most recent session with pending/running UiPath job, or None."""
+    if not _is_configured() or not email:
+        return None
+    url = (
+        f"{SUPABASE_URL}/rest/v1/citizen_sessions"
+        f"?user_email=eq.{email}&order=updated_at.desc&limit=1&select=*"
+    )
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.get(url, headers=_headers(), timeout=8)
+        if r.status_code == 200 and r.json():
+            return r.json()[0]
+    except Exception as exc:
+        logger.warning(f"[Supabase] get_latest_citizen_session failed: {exc}")
+    return None
+
+
+async def update_session_job_status(email: str, job_status: str) -> bool:
+    """Update the job_status for the citizen's latest session."""
+    if not _is_configured() or not email:
+        return False
+    payload = {"job_status": job_status, "updated_at": datetime.now(timezone.utc).isoformat()}
+    url = f"{SUPABASE_URL}/rest/v1/citizen_sessions?user_email=eq.{email}&order=updated_at.desc&limit=1"
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.patch(url, headers=_headers(), content=json.dumps(payload), timeout=8)
+        return r.status_code in (200, 204)
+    except Exception as exc:
+        logger.warning(f"[Supabase] update_session_job_status failed: {exc}")
+    return False
+
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def profile_to_citizen_data(profile: dict) -> dict:

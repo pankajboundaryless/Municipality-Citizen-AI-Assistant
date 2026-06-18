@@ -25,6 +25,7 @@ from gemini_live import GeminiLive
 from supabase_db import (
     get_citizen_profile, upsert_citizen_profile,
     save_citizen_document, get_citizen_documents,
+    save_citizen_session, get_latest_citizen_session,
     profile_to_citizen_data, extracted_to_profile_fields,
 )
 from twilio_handler import TwilioHandler
@@ -203,6 +204,22 @@ def _build_system_instruction(citizen: dict, prev_transcript: list | None = None
         + "\n\nDo NOT ask the citizen for any of the above fields — they are already on record. "
         "Skip directly to any remaining missing information for the service checklist below."
     )
+
+    # Inject pending UiPath job context so Gemini resumes intelligently
+    pending_job = citizen.get("_pendingJob")
+    if pending_job:
+        already_known_block += (
+            f"\n\nRESUMED APPLICATION — PENDING UIPATH JOB:\n"
+            f"  The citizen has an existing application in progress.\n"
+            f"  Service:     {pending_job.get('serviceType', 'Unknown')}\n"
+            f"  Job key:     {pending_job.get('jobKey', 'Unknown')}\n"
+            f"  Status:      {pending_job.get('jobStatus', 'submitted')}\n"
+            f"  Submitted:   {pending_job.get('submittedAt', '')[:10]}\n\n"
+            f"IMPORTANT: Do NOT start a new application. Greet the citizen by name, "
+            f"tell them their previous {pending_job.get('serviceType', 'application')} "
+            f"is still being processed (job key: {pending_job.get('jobKey', '')}), "
+            f"and ask if they want a status update or have new information to add."
+        )
 
     requirements_section = _get_requirements(service)
     requirements_block = (
@@ -411,17 +428,31 @@ async def session_init(request: Request, data: dict, _user=Depends(require_auth)
 
     citizen_data: dict = data.get("citizenData", {})
 
-    # Merge Supabase profile if citizen provided an email and has a saved profile
+    # Merge Supabase profile + previous UiPath job state
     email = citizen_data.get("email", "") or (get_current_user(request) or {}).get("email", "")
+    pending_job: dict | None = None
     if email:
+        # 1. Merge saved profile fields (fill blanks only)
         profile = await get_citizen_profile(email)
         if profile:
             saved = profile_to_citizen_data(profile)
-            # Saved profile fills in blanks — form values take priority if already provided
             for k, v in saved.items():
                 if v and not citizen_data.get(k):
                     citizen_data[k] = v
-            logger.info(f"Supabase profile merged for {email}: {list(saved.keys())}")
+            logger.info(f"Supabase profile merged for {email}")
+
+        # 2. Load previous UiPath job so Gemini can resume the application
+        prev_session = await get_latest_citizen_session(email)
+        if prev_session and prev_session.get("job_status") not in ("completed", "cancelled"):
+            pending_job = {
+                "jobKey":      prev_session.get("uipath_job_key"),
+                "jobId":       prev_session.get("uipath_job_id"),
+                "serviceType": prev_session.get("service_type"),
+                "jobStatus":   prev_session.get("job_status"),
+                "submittedAt": prev_session.get("updated_at"),
+            }
+            citizen_data["_pendingJob"] = pending_job
+            logger.info(f"Previous UiPath job loaded for {email}: {pending_job['jobKey']}")
 
     _sessions[session_id] = {
         "citizen_data": citizen_data,
@@ -429,7 +460,12 @@ async def session_init(request: Request, data: dict, _user=Depends(require_auth)
         "transcript": data.get("transcript", []),
     }
     logger.info(f"Session initialised: {session_id[:8]}…")
-    return {"sessionId": session_id, "status": "ok", "profileLoaded": bool(email)}
+    return {
+        "sessionId":   session_id,
+        "status":      "ok",
+        "profileLoaded": bool(email),
+        "pendingJob":  pending_job,
+    }
 
 
 @app.post("/upload-document")
@@ -567,12 +603,34 @@ async def websocket_endpoint(
             "requestSummary": summary,
             "capturedPhotoCount": len(session_data.get("captured_images", [])),
         }
-        return await _maestro.submit(
+        result = await _maestro.submit(
             session_id=session_id,
             subject=subject,
             citizen_data=enriched,
             documents=docs or None,
         )
+
+        # Persist job to Supabase so citizen can resume next visit
+        email = citizen_data.get("email", "")
+        if email:
+            # Extract job ID/key from result string (format: "Job key: xxx")
+            import re as _re
+            job_key = (_re.search(r"[Jj]ob\s+key[:\s]+(\S+)", result or "") or
+                       _re.search(r"([a-f0-9\-]{8,})", result or ""))
+            job_key = job_key.group(1) if job_key else session_id
+            asyncio.create_task(save_citizen_session(
+                email=email,
+                session_id=session_id,
+                uipath_job_id=session_id,
+                uipath_job_key=job_key,
+                service_type=citizen_data.get("selectedService", subject),
+                citizen_data=enriched,
+                transcript=session_data.get("transcript", []),
+                job_status="submitted",
+            ))
+            logger.info(f"[Supabase] UiPath job cached for {email} — key: {job_key}")
+
+        return result
 
     gemini = GeminiLive(
         api_key=GEMINI_API_KEY,
