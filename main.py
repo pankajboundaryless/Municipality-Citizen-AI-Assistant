@@ -22,6 +22,11 @@ from google.genai import types as genai_types
 from auth import require_auth, get_current_user, router as auth_router
 from db import init_db, upsert_session, get_last_session
 from gemini_live import GeminiLive
+from supabase_db import (
+    get_citizen_profile, upsert_citizen_profile,
+    save_citizen_document, get_citizen_documents,
+    profile_to_citizen_data, extracted_to_profile_fields,
+)
 from twilio_handler import TwilioHandler
 from uipath_fetch_id import extract_id_fields
 from uipath_maestro import UiPathMaestroClient, UiPathMaestroConfig
@@ -361,18 +366,70 @@ async def scan_id_card(request: Request, _user=Depends(require_auth)):
         return JSONResponse({"success": False, "error": str(exc)}, status_code=500)
 
 
+@app.get("/api/citizen-profile")
+async def citizen_profile_get(request: Request, _user=Depends(require_auth)):
+    """Return saved Supabase profile + document history for the logged-in citizen."""
+    user = get_current_user(request)
+    email = (user or {}).get("email", "")
+    profile = await get_citizen_profile(email)
+    documents = await get_citizen_documents(email)
+    if not profile:
+        return JSONResponse({"found": False, "documents": documents})
+    return JSONResponse({
+        "found": True,
+        "citizenData": profile_to_citizen_data(profile),
+        "documents": documents,
+        "profile": profile,
+    })
+
+
+@app.post("/api/citizen-profile")
+async def citizen_profile_save(request: Request, data: dict, _user=Depends(require_auth)):
+    """Save or update citizen profile in Supabase."""
+    user = get_current_user(request)
+    email = (user or {}).get("email", "") or data.get("email", "")
+    if not email:
+        return JSONResponse({"status": "error", "detail": "No email"}, status_code=400)
+    fields = {
+        "full_name":     data.get("name") or data.get("full_name"),
+        "id_number":     data.get("id_number"),
+        "phone":         data.get("phone"),
+        "nationality":   data.get("nationality"),
+        "date_of_birth": data.get("date_of_birth"),
+        "address":       data.get("address"),
+        "gender":        data.get("gender"),
+    }
+    ok = await upsert_citizen_profile(email, fields)
+    return JSONResponse({"status": "ok" if ok else "error"})
+
+
 @app.post("/session/init")
-async def session_init(data: dict, _user=Depends(require_auth)):
+async def session_init(request: Request, data: dict, _user=Depends(require_auth)):
     """Create or refresh a citizen session with profile data before the WebSocket connects."""
     session_id = data.get("sessionId") or str(uuid.uuid4())
     existing_docs = _sessions.get(session_id, {}).get("documents", [])
+
+    citizen_data: dict = data.get("citizenData", {})
+
+    # Merge Supabase profile if citizen provided an email and has a saved profile
+    email = citizen_data.get("email", "") or (get_current_user(request) or {}).get("email", "")
+    if email:
+        profile = await get_citizen_profile(email)
+        if profile:
+            saved = profile_to_citizen_data(profile)
+            # Saved profile fills in blanks — form values take priority if already provided
+            for k, v in saved.items():
+                if v and not citizen_data.get(k):
+                    citizen_data[k] = v
+            logger.info(f"Supabase profile merged for {email}: {list(saved.keys())}")
+
     _sessions[session_id] = {
-        "citizen_data": data.get("citizenData", {}),
+        "citizen_data": citizen_data,
         "documents": existing_docs,
-        "transcript": data.get("transcript", []),  # carry over previous transcript if resuming
+        "transcript": data.get("transcript", []),
     }
     logger.info(f"Session initialised: {session_id[:8]}…")
-    return {"sessionId": session_id, "status": "ok"}
+    return {"sessionId": session_id, "status": "ok", "profileLoaded": bool(email)}
 
 
 @app.post("/upload-document")
@@ -406,6 +463,22 @@ async def upload_document(
             logger.info(f"DU extracted {list(extracted.keys())} from '{file.filename}' session={sessionId[:8]}")
     except Exception as exc:
         logger.warning(f"DU extraction skipped for '{file.filename}': {exc}")
+
+    # Persist document + extracted fields to Supabase (best-effort)
+    citizen_email = _sessions[sessionId].get("citizen_data", {}).get("email", "")
+    if citizen_email:
+        doc_type = _sessions[sessionId].get("citizen_data", {}).get("service", "identity_document")
+        asyncio.create_task(save_citizen_document(
+            email=citizen_email,
+            filename=file.filename,
+            document_type=doc_type,
+            extracted_fields=extracted,
+        ))
+        if extracted:
+            asyncio.create_task(upsert_citizen_profile(
+                email=citizen_email,
+                fields=extracted_to_profile_fields(extracted),
+            ))
 
     return {"status": "ok", "filename": file.filename, "size": len(content), "extracted": extracted}
 

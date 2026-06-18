@@ -60,6 +60,9 @@ async function initAuth() {
       citizenEmailEl.value = data.user.email;
     }
 
+    // Load Supabase profile and pre-fill form + document history
+    loadCitizenProfile();
+
     // Check for a previous session to resume
     checkResumeSession();
 
@@ -746,6 +749,58 @@ function resetUI() {
 }
 
 restartBtn.addEventListener('click', resetUI);
+
+// ── Supabase Citizen Profile ──────────────────────────────────
+let _citizenProfile = null;
+
+async function loadCitizenProfile() {
+  try {
+    const res = await fetch('/api/citizen-profile');
+    if (!res.ok) return;
+    const data = await res.json();
+    if (!data.found) return;
+
+    _citizenProfile = data;
+    const cd = data.citizenData || {};
+
+    // Pre-fill form — only fill blanks, never overwrite what user typed
+    if (cd.name  && !citizenNameEl.value.trim())  { citizenNameEl.value  = cd.name;  validateForm(); }
+    if (cd.id_number && !citizenIdEl.value.trim()) { citizenIdEl.value   = cd.id_number; }
+    if (cd.email && !citizenEmailEl.value.trim())  { citizenEmailEl.value = cd.email; }
+    if (cd.phone && !citizenPhoneEl.value.trim())  { citizenPhoneEl.value = cd.phone; }
+
+    // Show document history badge on Identity Documents card
+    if (data.documents?.length > 0) {
+      _renderDocumentHistory(data.documents);
+    }
+
+    // Show a subtle "profile loaded" toast
+    _showProfileToast(`Welcome back! Your profile was pre-filled (${data.documents?.length || 0} document${data.documents?.length !== 1 ? 's' : ''} on file).`);
+
+  } catch { /* ignore — Supabase offline is non-fatal */ }
+}
+
+function _showProfileToast(msg) {
+  const toast = document.createElement('div');
+  toast.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#1e293b;color:#e2e8f0;padding:10px 20px;border-radius:8px;font-size:13px;z-index:9999;box-shadow:0 4px 12px rgba(0,0,0,.3);opacity:0;transition:opacity .3s';
+  toast.textContent = msg;
+  document.body.appendChild(toast);
+  requestAnimationFrame(() => { toast.style.opacity = '1'; });
+  setTimeout(() => { toast.style.opacity = '0'; setTimeout(() => toast.remove(), 400); }, 4000);
+}
+
+function _renderDocumentHistory(docs) {
+  // Show badge count on Identity Documents service card
+  const idCard = document.querySelector('[data-service="identity_documents"], [data-service="Identity Documents"]');
+  if (idCard && !idCard.querySelector('.doc-badge')) {
+    const badge = document.createElement('span');
+    badge.className = 'doc-badge';
+    badge.style.cssText = 'display:inline-block;background:#7c3aed;color:#fff;font-size:11px;font-weight:700;padding:2px 7px;border-radius:10px;margin-left:6px;vertical-align:middle';
+    badge.textContent = `${docs.length} doc${docs.length !== 1 ? 's' : ''}`;
+    const title = idCard.querySelector('h3, strong, b') || idCard;
+    title.appendChild(badge);
+  }
+}
 
 // ── Session Resume ────────────────────────────────────────────
 let _resumeData = null;
