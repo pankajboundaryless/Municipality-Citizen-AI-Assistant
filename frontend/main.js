@@ -113,6 +113,7 @@ let detectedLanguage  = 'en';  // BCP-47 code from navigator.languages
 let currentGeminiDiv  = null;
 let currentUserDiv    = null;
 let processingNotice  = null;  // reference to the active "Processing…" notice
+let detectingNotice   = null;  // reference to the active "Detecting Document" notice
 const localFiles      = [];   // {name, size} tracking for UI
 
 // ── Service Card Selection ────────────────────────────────────
@@ -236,6 +237,13 @@ function handleJsonMessage(msg) {
       removeProcessingNotice();
       break;
 
+    case 'du_result':
+      removeDetectingNotice();
+      if (Object.keys(msg.extracted || {}).length > 0) {
+        appendSystemMsg(`ID fields detected: ${Object.keys(msg.extracted).join(', ')}`);
+      }
+      break;
+
     case 'error':
       appendSystemMsg('An error occurred: ' + (msg.error || 'Unknown error.'));
       break;
@@ -306,6 +314,26 @@ function removeProcessingNotice() {
     processingNotice.remove();
   }
   processingNotice = null;
+}
+
+function appendDetectingNotice() {
+  const div = document.createElement('div');
+  div.className = 'message-processing';
+  div.innerHTML = `
+    <span>Detecting Document</span>
+    <div class="dot-flashing" aria-hidden="true">
+      <span></span><span></span><span></span>
+    </div>`;
+  chatLog.appendChild(div);
+  scrollChat();
+  return div;
+}
+
+function removeDetectingNotice() {
+  if (detectingNotice && detectingNotice.parentNode) {
+    detectingNotice.remove();
+  }
+  detectingNotice = null;
 }
 
 function scrollChat() {
@@ -496,7 +524,7 @@ captureBtn.addEventListener('click', () => {
   const dataUrl  = canvas.toDataURL('image/jpeg', 0.92);
   const base64   = dataUrl.split(',')[1];
 
-  // Send to backend for storage
+  // Send to backend for storage and trigger DU extraction
   geminiClient.send(JSON.stringify({ type: 'capture_photo', data: base64, filename }));
 
   // Add to the local file list so the citizen can see it
@@ -510,6 +538,7 @@ captureBtn.addEventListener('click', () => {
   wrapper.addEventListener('animationend', () => wrapper.classList.remove('capture-flash'), { once: true });
 
   appendSystemMsg(`Photo captured: ${filename}`);
+  detectingNotice = appendDetectingNotice();
 });
 
 // ── Text Chat ─────────────────────────────────────────────────
@@ -574,26 +603,36 @@ async function uploadFile(file) {
   form.append('sessionId', currentSessionId);
   form.append('file', file);
 
+  detectingNotice = appendDetectingNotice();
   try {
     const res = await fetch('/upload-document', { method: 'POST', body: form });
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: res.statusText }));
       throw new Error(err.error || res.statusText);
     }
+    const data = await res.json();
+    const extracted = data.extracted || {};
 
     localFiles.push({ name: file.name, size: file.size });
     renderFileList();
 
-    // Notify the AI about the new document
+    // Notify the AI about the new document, including any auto-extracted ID fields
     if (geminiClient.isConnected()) {
       geminiClient.send(
-        JSON.stringify({ type: 'document_notify', filename: file.name, contentType: file.type })
+        JSON.stringify({ type: 'document_notify', filename: file.name, contentType: file.type, extracted })
       );
     }
 
-    appendSystemMsg(`Document attached: ${file.name}`);
+    const extractedKeys = Object.keys(extracted);
+    if (extractedKeys.length > 0) {
+      appendSystemMsg(`Document attached: ${file.name} (ID fields detected: ${extractedKeys.join(', ')})`);
+    } else {
+      appendSystemMsg(`Document attached: ${file.name}`);
+    }
   } catch (err) {
     appendSystemMsg(`Failed to upload "${file.name}": ${err.message}`);
+  } finally {
+    removeDetectingNotice();
   }
 }
 

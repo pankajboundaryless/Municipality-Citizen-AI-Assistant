@@ -23,6 +23,7 @@ from auth import require_auth, get_current_user, router as auth_router
 from db import init_db, upsert_session, get_last_session
 from gemini_live import GeminiLive
 from twilio_handler import TwilioHandler
+from uipath_fetch_id import extract_id_fields
 from uipath_maestro import UiPathMaestroClient, UiPathMaestroConfig
 
 def _setup_logging() -> logging.Logger:
@@ -395,7 +396,18 @@ async def upload_document(
         "data": content,
     })
     logger.info(f"Document saved: session={sessionId[:8]}, file={file.filename}, size={len(content)}")
-    return {"status": "ok", "filename": file.filename, "size": len(content)}
+
+    # Attempt automatic ID field extraction via Document Understanding
+    extracted: dict = {}
+    try:
+        result = await extract_id_fields(content, file.filename)
+        if result:
+            extracted = result
+            logger.info(f"DU extracted {list(extracted.keys())} from '{file.filename}' session={sessionId[:8]}")
+    except Exception as exc:
+        logger.warning(f"DU extraction skipped for '{file.filename}': {exc}")
+
+    return {"status": "ok", "filename": file.filename, "size": len(content), "extracted": extracted}
 
 
 @app.delete("/upload-document")
@@ -513,10 +525,23 @@ async def websocket_endpoint(
                                 continue
                             if payload.get("type") == "document_notify":
                                 fname = payload.get("filename", "a document")
-                                await text_q.put(
-                                    f"[System: The citizen has just uploaded a document: {fname}. "
-                                    f"Acknowledge its receipt in the conversation.]"
-                                )
+                                extracted = payload.get("extracted", {})
+                                if extracted:
+                                    fields_str = "; ".join(
+                                        f"{k}: {v}" for k, v in extracted.items()
+                                    )
+                                    await text_q.put(
+                                        f"[System: The citizen uploaded '{fname}'. "
+                                        f"Document Understanding automatically extracted these ID fields: {fields_str}. "
+                                        f"These are now pre-filled in the citizen record. "
+                                        f"Acknowledge the upload, briefly confirm the extracted details with the "
+                                        f"citizen, and do NOT ask for any field that was already extracted.]"
+                                    )
+                                else:
+                                    await text_q.put(
+                                        f"[System: The citizen has just uploaded a document: {fname}. "
+                                        f"Acknowledge its receipt in the conversation.]"
+                                    )
                                 continue
                             if payload.get("type") == "capture_photo":
                                 fname = payload.get("filename") or f"photo_{uuid.uuid4().hex[:8]}.jpg"
@@ -529,6 +554,25 @@ async def websocket_endpoint(
                                     f"file={fname}, size_b64={len(b64)}"
                                 )
                                 total = len(session_data["captured_images"])
+
+                                # Run DU extraction in background; result is pushed back
+                                # to the frontend as a du_result WebSocket event
+                                async def _du_photo(fname=fname, b64=b64) -> None:
+                                    try:
+                                        img_bytes = base64.b64decode(b64)
+                                        result = await extract_id_fields(img_bytes, fname)
+                                        event: dict = {"type": "du_result", "filename": fname, "extracted": result or {}}
+                                    except Exception as exc:
+                                        logger.warning(f"DU photo extraction failed for '{fname}': {exc}")
+                                        event = {"type": "du_result", "filename": fname, "extracted": {}}
+                                    try:
+                                        async with ws_send_lock:
+                                            await websocket.send_json(event)
+                                    except Exception:
+                                        pass
+
+                                asyncio.create_task(_du_photo())
+
                                 await text_q.put(
                                     f"[System: The citizen has captured a photo from their camera: '{fname}'. "
                                     f"Total captured photos this session: {total}. "
