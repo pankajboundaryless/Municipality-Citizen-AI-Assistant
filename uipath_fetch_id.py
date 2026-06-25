@@ -25,6 +25,8 @@ import aiohttp
 
 logger = logging.getLogger(__name__)
 
+_HEADERS_BASE = {"Accept-Encoding": "gzip, deflate"}
+
 # Env vars are read at call time (not module import time) so that load_dotenv()
 # in main.py takes effect before these values are used.
 
@@ -60,7 +62,7 @@ async def _get_token() -> str:
         "client_secret": client_secret,
         "scope":         "Du.Digitization.Api Du.Extraction.Api Du.DocumentManager.Document Du.Classification.Api Du.Validation.Api Du.DataDeletion.Api",
     }
-    async with aiohttp.ClientSession() as s:
+    async with aiohttp.ClientSession(headers=_HEADERS_BASE) as s:
         async with s.post(url, data=payload) as r:
             if r.status != 200:
                 raise RuntimeError(f"DU auth HTTP {r.status}: {await r.text()}")
@@ -73,7 +75,7 @@ async def _digitize(file_bytes: bytes, filename: str, token: str) -> str:
     headers = {"Authorization": f"Bearer {token}"}
     form = aiohttp.FormData()
     form.add_field("file", file_bytes, filename=filename, content_type="multipart/form-data")
-    async with aiohttp.ClientSession() as s:
+    async with aiohttp.ClientSession(headers=_HEADERS_BASE) as s:
         async with s.post(url, data=form, headers=headers) as r:
             if r.status not in (200, 201, 202):
                 raise RuntimeError(f"Digitize HTTP {r.status}: {await r.text()}")
@@ -89,7 +91,7 @@ async def _digitize(file_bytes: bytes, filename: str, token: str) -> str:
     poll_headers = {"Authorization": f"Bearer {token}"}
     for attempt in range(30):
         await asyncio.sleep(2)
-        async with aiohttp.ClientSession() as s:
+        async with aiohttp.ClientSession(headers=_HEADERS_BASE) as s:
             async with s.get(result_url, headers=poll_headers) as r:
                 if r.status == 200:
                     logger.info(f"Digitization complete after {attempt + 1} poll(s)")
@@ -104,7 +106,7 @@ async def _digitize(file_bytes: bytes, filename: str, token: str) -> str:
 async def _get_extractors(token: str) -> List[Dict[str, Any]]:
     url = f"{_du_base()}extractors/?api-version=1"
     headers = {"Authorization": f"Bearer {token}"}
-    async with aiohttp.ClientSession() as s:
+    async with aiohttp.ClientSession(headers=_HEADERS_BASE) as s:
         async with s.get(url, headers=headers) as r:
             if r.status != 200:
                 raise RuntimeError(f"Extractors HTTP {r.status}: {await r.text()}")
@@ -114,7 +116,7 @@ async def _get_extractors(token: str) -> List[Dict[str, Any]]:
 async def _extract(extractor_id: str, document_id: str, token: str) -> Dict[str, Any]:
     url = f"{_du_base()}extractors/{extractor_id}/extraction?api-version=1"
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    async with aiohttp.ClientSession() as s:
+    async with aiohttp.ClientSession(headers=_HEADERS_BASE) as s:
         async with s.post(url, json={"documentId": document_id}, headers=headers) as r:
             if r.status != 200:
                 raise RuntimeError(f"Extract HTTP {r.status}: {await r.text()}")

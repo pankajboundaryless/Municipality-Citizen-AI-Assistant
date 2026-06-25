@@ -8,9 +8,10 @@ completion, and returns the out_Reply output argument.
 Expected process input arguments
 ---------------------------------
 in_SessionId   : String  -- unique chat-session identifier (same across the whole chat)
-in_Subject     : String  -- service category (e.g. "Passport Renewal")
+in_Subject     : String  -- service category (e.g. "Identity Document Request")
 in_CitizenData : String  -- JSON-serialised citizen profile dict
-in_Documents   : String  -- JSON array of base64-encoded document bytes
+in_Documents   : String  -- JSON array of bucket paths: [{"name": str, "path": str}]
+in_Chat        : String  -- full conversation transcript (Agent/User turn pairs)
 
 Expected process output argument
 ----------------------------------
@@ -102,6 +103,7 @@ class UiPathMaestroClient:
         subject: str,
         citizen_data: Dict[str, Any],
         documents: Optional[List[Dict[str, Any]]] = None,
+        chat: str = "",
     ) -> str:
         """
         Start a UiPath job and wait for completion.
@@ -151,6 +153,7 @@ class UiPathMaestroClient:
                 "in_Subject": subject,
                 "in_CitizenData": json.dumps(enriched_citizen, ensure_ascii=False),
                 "in_Documents": json.dumps(uploaded_docs),
+                "in_Chat": chat,
             }
 
             job_id = await self._start_job(token, folder_id, release_key, input_args)
@@ -195,23 +198,26 @@ class UiPathMaestroClient:
             f"{self.cfg.base_url}/{self.cfg.organization}/{self.cfg.tenant}"
             "/orchestrator_/odata/Folders"
         )
-        params = {
-            "$filter": f"DisplayName eq '{self.cfg.folder_name}'",
-            "$select": "Id,DisplayName",
-        }
         headers = {"Authorization": f"Bearer {token}"}
-        async with aiohttp.ClientSession(headers=self._HEADERS_BASE) as s:
-            async with s.get(url, headers=headers, params=params) as r:
-                if r.status != 200:
-                    logger.warning(f"Folder lookup HTTP {r.status}: {await r.text()}")
-                    return None
-                items = (await r.json()).get("value", [])
-                if not items:
-                    logger.warning(f"Folder '{self.cfg.folder_name}' not found")
-                    return None
-        self._folder_id = items[0]["Id"]
-        logger.info(f"Folder resolved: {items[0]['DisplayName']} → id={self._folder_id}")
-        return self._folder_id
+        for field in ("FullyQualifiedName", "DisplayName"):
+            params = {
+                "$filter": f"{field} eq '{self.cfg.folder_name}'",
+                "$select": "Id,DisplayName,FullyQualifiedName",
+                "$top": "1",
+            }
+            async with aiohttp.ClientSession(headers=self._HEADERS_BASE) as s:
+                async with s.get(url, headers=headers, params=params) as r:
+                    if r.status != 200:
+                        logger.warning(f"Folder lookup by {field} HTTP {r.status}: {await r.text()}")
+                        continue
+                    items = (await r.json()).get("value", [])
+                    if items:
+                        self._folder_id = items[0]["Id"]
+                        fqn = items[0].get("FullyQualifiedName") or items[0]["DisplayName"]
+                        logger.info(f"Folder resolved by {field}: {fqn} → id={self._folder_id}")
+                        return self._folder_id
+        logger.warning(f"Folder '{self.cfg.folder_name}' not found by FullyQualifiedName or DisplayName")
+        return None
 
     async def _resolve_release_key(
         self,

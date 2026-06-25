@@ -14,12 +14,15 @@ logger = logging.getLogger(__name__)
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
+# Service role key bypasses RLS — required for server-side writes
+SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "") or SUPABASE_KEY
 
 
-def _headers() -> dict:
+def _headers(write: bool = False) -> dict:
+    key = SUPABASE_SERVICE_KEY if write else SUPABASE_KEY
     return {
-        "apikey": SUPABASE_KEY,
-        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "apikey": key,
+        "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
         "Prefer": "return=representation",
     }
@@ -56,7 +59,7 @@ async def upsert_citizen_profile(email: str, fields: dict) -> bool:
         **{k: v for k, v in fields.items() if v},
     }
     url = f"{SUPABASE_URL}/rest/v1/citizen_profiles?on_conflict=user_email"
-    headers = {**_headers(), "Prefer": "resolution=merge-duplicates,return=representation"}
+    headers = {**_headers(write=True), "Prefer": "resolution=merge-duplicates,return=representation"}
     try:
         async with httpx.AsyncClient() as client:
             r = await client.post(url, headers=headers, content=json.dumps(payload), timeout=8)
@@ -90,7 +93,7 @@ async def save_citizen_document(
     url = f"{SUPABASE_URL}/rest/v1/citizen_documents"
     try:
         async with httpx.AsyncClient() as client:
-            r = await client.post(url, headers=_headers(), content=json.dumps(payload), timeout=8)
+            r = await client.post(url, headers=_headers(write=True), content=json.dumps(payload), timeout=8)
         if r.status_code in (200, 201):
             logger.info(f"[Supabase] Document saved: {filename} for {email}")
             return True
@@ -145,7 +148,7 @@ async def save_citizen_session(
         "updated_at":      datetime.now(timezone.utc).isoformat(),
     }
     url = f"{SUPABASE_URL}/rest/v1/citizen_sessions?on_conflict=user_email"
-    headers = {**_headers(), "Prefer": "resolution=merge-duplicates,return=representation"}
+    headers = {**_headers(write=True), "Prefer": "resolution=merge-duplicates,return=representation"}
     try:
         async with httpx.AsyncClient() as client:
             r = await client.post(url, headers=headers, content=json.dumps(payload), timeout=8)
@@ -184,7 +187,7 @@ async def update_session_job_status(email: str, job_status: str) -> bool:
     url = f"{SUPABASE_URL}/rest/v1/citizen_sessions?user_email=eq.{email}&order=updated_at.desc&limit=1"
     try:
         async with httpx.AsyncClient() as client:
-            r = await client.patch(url, headers=_headers(), content=json.dumps(payload), timeout=8)
+            r = await client.patch(url, headers=_headers(write=True), content=json.dumps(payload), timeout=8)
         return r.status_code in (200, 204)
     except Exception as exc:
         logger.warning(f"[Supabase] update_session_job_status failed: {exc}")

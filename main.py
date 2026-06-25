@@ -141,6 +141,18 @@ _sessions: dict = {}
 
 _maestro = UiPathMaestroClient(UiPathMaestroConfig())
 
+# Service-specific structured fields to include in in_CitizenData (default to "" if missing)
+_ID_CARD_FIELDS = [
+    "dateOfBirth", "placeOfBirth", "nationality", "address",
+    "reasonForApplication", "currentIdNumber", "currentIdExpiry",
+    "replacementReason", "policeReportReference",
+]
+_PASSPORT_FIELDS = [
+    "dateOfBirth", "placeOfBirth", "nationality", "address",
+    "reasonForApplication", "currentPassportNumber", "currentPassportExpiry",
+    "plannedDepartureDate", "urgencyReason",
+]
+
 # Tool definition as a plain dict — widely compatible with google-genai SDK versions
 _SUBMIT_TOOL = {
     "function_declarations": [
@@ -169,12 +181,70 @@ _SUBMIT_TOOL = {
                             "and all key details collected during the conversation."
                         ),
                     },
+                    "collected_data": {
+                        "type": "object",
+                        "description": "Structured citizen data collected during the conversation. Use empty string for missing fields.",
+                        "properties": {
+                            "dateOfBirth":          {"type": "string"},
+                            "placeOfBirth":         {"type": "string"},
+                            "nationality":          {"type": "string"},
+                            "address":              {"type": "string"},
+                            "reasonForApplication": {"type": "string"},
+                            "currentIdNumber":      {"type": "string"},
+                            "currentIdExpiry":      {"type": "string"},
+                            "replacementReason":    {"type": "string"},
+                            "policeReportReference":{"type": "string"},
+                            "currentPassportNumber":{"type": "string"},
+                            "currentPassportExpiry":{"type": "string"},
+                            "plannedDepartureDate": {"type": "string"},
+                            "urgencyReason":        {"type": "string"},
+                        },
+                    },
                 },
                 "required": ["subject", "summary"],
             },
         }
     ]
 }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DU extraction notification builder
+# ─────────────────────────────────────────────────────────────────────────────
+
+_CITIZEN_DISPLAY_KEYS = {"name", "idNumber", "email", "phone"}
+
+def _du_notification(fname: str, extracted: dict, citizen: dict) -> str:
+    """
+    Build the system message sent to Gemini after a successful DU extraction.
+    Includes extracted fields and a comparison against existing registration data
+    so the AI can flag and resolve any discrepancies with the citizen.
+    """
+    fields_str = "\n".join(f"  {k}: {v}" for k, v in extracted.items())
+
+    known = {k: v for k, v in citizen.items() if v and k in _CITIZEN_DISPLAY_KEYS}
+    if known:
+        known_str = "\n".join(f"  {k}: {v}" for k, v in known.items())
+        comparison = (
+            f"\n\nThe citizen already provided these details at registration:\n{known_str}\n\n"
+            "Compare the two sets of data carefully:\n"
+            "- If a field from the document DIFFERS from the registration value, point out the "
+            "discrepancy to the citizen and ask them to confirm which is correct. "
+            "Do this for each mismatching field before moving on.\n"
+            "- If everything matches, briefly confirm what you found and continue.\n"
+            "- Use the confirmed (or matching) values for the rest of the conversation."
+        )
+    else:
+        comparison = (
+            "\n\nNo prior registration data to compare against. "
+            "Confirm the extracted details with the citizen and use them going forward."
+        )
+
+    return (
+        f"[System: Document Understanding extracted the following fields from '{fname}':\n"
+        f"{fields_str}"
+        f"{comparison}]"
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -270,7 +340,10 @@ def _build_system_instruction(citizen: dict, prev_transcript: list | None = None
         "5. If documents were uploaded, acknowledge them by name and confirm their purpose.\n"
         "6. If the citizen shares their camera or screen, describe what you observe if relevant.\n"
         "7. On citizen confirmation, call submit_to_municipality. Do NOT wait for every field — "
-        "partial data is acceptable; Maestro handles validation.\n"
+        "partial data is acceptable; Maestro handles validation. "
+        "Populate collected_data with ALL structured fields gathered in this conversation "
+        "(dateOfBirth, placeOfBirth, nationality, address, reasonForApplication, etc.) — "
+        "pass empty string for anything not provided, never omit a key.\n"
         "8. Relay the Maestro response (reference number, status, or next steps) clearly.\n\n"
         "Handle personal data with discretion. If you cannot answer a specific procedural "
         "question, direct the citizen to the relevant municipal department or advise an in-person visit."
@@ -283,7 +356,7 @@ def _build_transcript_context(transcript: list | None) -> str:
     if not transcript:
         return ""
     lines = []
-    for msg in transcript[-40:]:
+    for msg in transcript[-10:]:  # last 10 messages to keep system instruction small
         role = "Citizen" if msg.get("type") == "user" else "Assistant"
         text = msg.get("text", "").strip()
         if text:
@@ -496,6 +569,7 @@ async def upload_document(
         result = await extract_id_fields(content, file.filename)
         if result:
             extracted = result
+            _sessions[sessionId].setdefault("du_extracted", {}).update(extracted)
             logger.info(f"DU extracted {list(extracted.keys())} from '{file.filename}' session={sessionId[:8]}")
     except Exception as exc:
         logger.warning(f"DU extraction skipped for '{file.filename}': {exc}")
@@ -584,8 +658,19 @@ async def websocket_endpoint(
         except Exception:
             pass  # client disconnected
 
-    async def handle_submit(subject: str, summary: str) -> str:
+    async def handle_submit(
+        subject: str,
+        summary: str,
+        collected_data: dict | None = None,
+    ) -> str:
         """Tool handler: forwards citizen request to UiPath Maestro."""
+        logger.warning(f"[handle_submit] called: subject={subject!r} docs={len(session_data.get('documents',[]))} collected_data_type={type(collected_data).__name__}")
+        # Flush any pending AI turn into the chat log before capturing it
+        if session_data.get("_ai_turn"):
+            ai_text = "".join(session_data.pop("_ai_turn"))
+            session_data.setdefault("chat_log", []).append(f"Agent: {ai_text}")
+        in_chat = "\n".join(session_data.get("chat_log", []))
+
         docs: list[dict] = [
             {"name": d["filename"], "data": d["data"]}
             for d in session_data.get("documents", [])
@@ -598,17 +683,39 @@ async def websocket_endpoint(
                 })
             except Exception as exc:
                 logger.warning(f"Could not decode captured image '{img.get('filename')}': {exc}")
-        enriched = {
+
+        # Build in_CitizenData: registration data → DU extracted fields → AI-collected fields
+        du_fields = session_data.get("du_extracted", {})
+        # collected_data may arrive as a protobuf MapComposite — convert to plain dict
+        try:
+            cd = dict(collected_data) if collected_data else {}
+        except Exception:
+            cd = {}
+        enriched: dict = {
             **citizen_data,
+            **{k: v for k, v in du_fields.items() if v},   # DU raw fields
+            **{k: v for k, v in cd.items() if v},           # AI-collected structured fields
             "requestSummary": summary,
             "capturedPhotoCount": len(session_data.get("captured_images", [])),
+            "documentCount": len(docs),
         }
+        # Ensure all service-specific fields exist (empty string if missing)
+        service = citizen_data.get("selectedService", "")
+        if "identity" in service.lower() or "id card" in service.lower():
+            for f in _ID_CARD_FIELDS:
+                enriched.setdefault(f, "")
+        elif "passport" in service.lower():
+            for f in _PASSPORT_FIELDS:
+                enriched.setdefault(f, "")
+
         result = await _maestro.submit(
             session_id=session_id,
             subject=subject,
             citizen_data=enriched,
             documents=docs or None,
+            chat=in_chat,
         )
+        logger.warning(f"[handle_submit] maestro result: {result[:120]!r}")
 
         # Persist job to Supabase so citizen can resume next visit
         email = citizen_data.get("email", "")
@@ -658,15 +765,8 @@ async def websocket_endpoint(
                                 fname = payload.get("filename", "a document")
                                 extracted = payload.get("extracted", {})
                                 if extracted:
-                                    fields_str = "; ".join(
-                                        f"{k}: {v}" for k, v in extracted.items()
-                                    )
                                     await text_q.put(
-                                        f"[System: The citizen uploaded '{fname}'. "
-                                        f"Document Understanding automatically extracted these ID fields: {fields_str}. "
-                                        f"These are now pre-filled in the citizen record. "
-                                        f"Acknowledge the upload, briefly confirm the extracted details with the "
-                                        f"citizen, and do NOT ask for any field that was already extracted.]"
+                                        _du_notification(fname, extracted, citizen_data)
                                     )
                                 else:
                                     await text_q.put(
@@ -689,18 +789,27 @@ async def websocket_endpoint(
                                 # Run DU extraction in background; result is pushed back
                                 # to the frontend as a du_result WebSocket event
                                 async def _du_photo(fname=fname, b64=b64) -> None:
+                                    extracted: dict = {}
                                     try:
                                         img_bytes = base64.b64decode(b64)
                                         result = await extract_id_fields(img_bytes, fname)
-                                        event: dict = {"type": "du_result", "filename": fname, "extracted": result or {}}
+                                        extracted = result or {}
                                     except Exception as exc:
                                         logger.warning(f"DU photo extraction failed for '{fname}': {exc}")
-                                        event = {"type": "du_result", "filename": fname, "extracted": {}}
+                                    # Push UI update
                                     try:
                                         async with ws_send_lock:
-                                            await websocket.send_json(event)
+                                            await websocket.send_json(
+                                                {"type": "du_result", "filename": fname, "extracted": extracted}
+                                            )
                                     except Exception:
                                         pass
+                                    # Persist extracted fields in session and notify AI
+                                    if extracted:
+                                        session_data.setdefault("du_extracted", {}).update(extracted)
+                                        await text_q.put(
+                                            _du_notification(fname, extracted, citizen_data)
+                                        )
 
                                 asyncio.create_task(_du_photo())
 
@@ -733,6 +842,18 @@ async def websocket_endpoint(
             audio_output_callback=on_audio_out,
         ):
             if event:
+                # Accumulate conversation for in_Chat
+                etype = event.get("type", "")
+                etext = event.get("text", "")
+                if etype == "gemini" and etext:
+                    session_data.setdefault("_ai_turn", []).append(etext)
+                elif etext:
+                    # Non-gemini text event: flush completed AI turn first
+                    if session_data.get("_ai_turn"):
+                        ai_text = "".join(session_data.pop("_ai_turn"))
+                        session_data.setdefault("chat_log", []).append(f"Agent: {ai_text}")
+                    if etype == "input_transcript":
+                        session_data.setdefault("chat_log", []).append(f"User: {etext}")
                 try:
                     async with ws_send_lock:
                         await websocket.send_json(event)
