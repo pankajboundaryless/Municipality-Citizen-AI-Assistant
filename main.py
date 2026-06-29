@@ -152,6 +152,17 @@ _PASSPORT_FIELDS = [
     "reasonForApplication", "currentPassportNumber", "currentPassportExpiry",
     "plannedDepartureDate", "urgencyReason",
 ]
+_CONSTRUCTION_PERMIT_FIELDS = [
+    "propertyAddress", "cadastralReference", "typeOfWorks", "worksDescription",
+    "floorAreaM2", "projectStartDate", "projectDuration",
+    "architectName", "architectLicence", "contractorName",
+]
+_WORK_PERMIT_FIELDS = [
+    "dateOfBirth", "nationality", "address", "passportNumber", "passportExpiry",
+    "reasonForApplication", "employerName", "employerAddress", "jobTitle",
+    "employmentType", "intendedStartDate", "intendedEndDate",
+    "currentPermitNumber", "currentPermitExpiry", "previousEmployerName",
+]
 
 # Tool definition as a plain dict — widely compatible with google-genai SDK versions
 _SUBMIT_TOOL = {
@@ -185,19 +196,45 @@ _SUBMIT_TOOL = {
                         "type": "object",
                         "description": "Structured citizen data collected during the conversation. Use empty string for missing fields.",
                         "properties": {
+                            # Identity Document / Passport shared
                             "dateOfBirth":          {"type": "string"},
                             "placeOfBirth":         {"type": "string"},
                             "nationality":          {"type": "string"},
                             "address":              {"type": "string"},
                             "reasonForApplication": {"type": "string"},
+                            # Identity Document specific
                             "currentIdNumber":      {"type": "string"},
                             "currentIdExpiry":      {"type": "string"},
                             "replacementReason":    {"type": "string"},
                             "policeReportReference":{"type": "string"},
+                            # Passport specific
                             "currentPassportNumber":{"type": "string"},
                             "currentPassportExpiry":{"type": "string"},
                             "plannedDepartureDate": {"type": "string"},
                             "urgencyReason":        {"type": "string"},
+                            # Construction Permit specific
+                            "propertyAddress":      {"type": "string"},
+                            "cadastralReference":   {"type": "string"},
+                            "typeOfWorks":          {"type": "string"},
+                            "worksDescription":     {"type": "string"},
+                            "floorAreaM2":          {"type": "string"},
+                            "projectStartDate":     {"type": "string"},
+                            "projectDuration":      {"type": "string"},
+                            "architectName":        {"type": "string"},
+                            "architectLicence":     {"type": "string"},
+                            "contractorName":       {"type": "string"},
+                            # Work Permit specific
+                            "passportNumber":       {"type": "string"},
+                            "passportExpiry":       {"type": "string"},
+                            "employerName":         {"type": "string"},
+                            "employerAddress":      {"type": "string"},
+                            "jobTitle":             {"type": "string"},
+                            "employmentType":       {"type": "string"},
+                            "intendedStartDate":    {"type": "string"},
+                            "intendedEndDate":      {"type": "string"},
+                            "currentPermitNumber":  {"type": "string"},
+                            "currentPermitExpiry":  {"type": "string"},
+                            "previousEmployerName": {"type": "string"},
                         },
                     },
                 },
@@ -706,6 +743,12 @@ async def websocket_endpoint(
                 enriched.setdefault(f, "")
         elif "passport" in service.lower():
             for f in _PASSPORT_FIELDS:
+                enriched.setdefault(f, "")
+        elif "construction" in service.lower():
+            for f in _CONSTRUCTION_PERMIT_FIELDS:
+                enriched.setdefault(f, "")
+        elif "work" in service.lower():
+            for f in _WORK_PERMIT_FIELDS:
                 enriched.setdefault(f, "")
 
         result = await _maestro.submit(
