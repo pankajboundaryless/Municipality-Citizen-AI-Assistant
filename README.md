@@ -24,6 +24,32 @@ FastAPI Backend (main.py)
 - **OAuth2 login** — Microsoft and Google SSO via Authlib
 - **Camera / screen share** — video frames forwarded to Gemini for visual context
 
+## UiPath Components Used
+
+### Agent Type
+This solution utilises **both Coded Agents and Low-code Agents**:
+
+- **Coded Agent** — the Python FastAPI backend (`uipath_maestro.py`, `uipath_fetch_id.py`) acts as a coded agent that programmatically calls UiPath Orchestrator REST APIs, manages OAuth2 tokens, uploads documents to storage buckets, starts Maestro jobs, polls for completion, and returns results to the Gemini Live session.
+- **Low-code Agents** — the `Municipality_ID_Management` Maestro process (built in UiPath Studio as a BPMN workflow) contains low-code agents that handle the citizen request end-to-end once triggered: triage, ID extraction, data matching, scheduling, and response generation.
+
+### Comprehensive Component List
+
+| UiPath Component | How it is used in this solution |
+|---|---|
+| **UiPath Maestro** | Orchestrates the entire municipal back-office workflow as a BPMN process. Receives `in_SessionId`, `in_Subject`, `in_CitizenData`, `in_Documents`, and `in_Chat` from the Python backend and returns `out_Reply` to the citizen |
+| **Agent Builder** | Used to build the agentic components inside the Maestro process: `Citizen_Response_Agent` (generates citizen-facing replies), `Triage Agent` (classifies request as New / Renew / Stolen ID / Construction Permit / Zoning), and `MatchDataAgent` (matches citizen data against municipal records) |
+| **Maestro BPMN Process** | `Municipality_ID_Management` — a BPMN-based low-code workflow that branches by request category, runs IDP extraction, matches data, schedules appointments, submits responses, and sends email confirmations |
+| **UiPath Document Understanding (IDP)** | Digitizes uploaded passport/ID images via the DU REST API, selects the correct extractor (`IdentityDocument_passports_v1`), and extracts structured fields (Passport Number, Name, Nationality, Date of Birth, etc.) |
+| **IDP Extraction Workflow** | `IDP_ID_Extraction` sub-process inside the Maestro solution — runs document classification and field extraction as a reusable low-code workflow |
+| **Deserialize_ID Workflow** | Low-code workflow that parses the `in_CitizenData` JSON argument into typed UiPath variables for use by downstream agents |
+| **Orchestrator Storage Buckets** | `Document_Repository` bucket stores uploaded citizen documents at path `{session_id}/{filename}`. Maestro reads files from the bucket using paths passed via `in_Documents` |
+| **Orchestrator Folders** | `Shared/Municipality_ID` folder scopes all processes, releases, and storage buckets for this solution |
+| **Orchestrator Releases & Jobs** | The Python coded agent resolves the release key at startup, then starts jobs via `StartJobs` API and polls `Jobs({id})` until completion |
+| **UiPath Orchestrator REST API** | Called directly from the Python coded agent for: OAuth2 token (`/identity_/connect/token`), folder lookup (`/odata/OrganizationUnits`), release lookup (`/odata/Releases`), bucket resolution (`/odata/Buckets`), file upload (`GetWriteUri` + presigned URL), job start (`StartJobs`), and job polling (`/odata/Jobs`) |
+| **API Workflows (HTTP Request)** | Inside the Maestro BPMN process, an HTTP Request activity calls the Supabase REST API to write matched citizen data back to the `citizen_profiles` table |
+| **Send Email Activity** | Sends appointment confirmation email to the citizen after the request is processed |
+| **Schedule Appointment** | Low-code workflow step that books the citizen's appointment slot within the Maestro process |
+
 ## Project Structure
 
 ```
