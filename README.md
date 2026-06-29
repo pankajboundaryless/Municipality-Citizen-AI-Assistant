@@ -126,6 +126,12 @@ python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
 Open [http://localhost:8000](http://localhost:8000) in your browser.
 
+## Live Deployment
+
+The application is deployed on **Azure App Service (West Europe)**:
+
+**[https://municipality-citizen-ai-f0h4cgh4affahnhb.westeurope-01.azurewebsites.net](https://municipality-citizen-ai-f0h4cgh4affahnhb.westeurope-01.azurewebsites.net)**
+
 ## UiPath Maestro Integration
 
 The process `Municipality_ID_Management` is triggered via the `submit_to_municipality` tool. Input arguments:
