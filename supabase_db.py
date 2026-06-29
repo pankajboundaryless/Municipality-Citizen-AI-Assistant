@@ -211,22 +211,44 @@ def profile_to_citizen_data(profile: dict) -> dict:
 
 
 def extracted_to_profile_fields(extracted: dict) -> dict:
-    """Map DU/Gemini extracted field names → citizen_profiles column names."""
-    mapping = {
-        "name":           "full_name",
-        "full_name":      "full_name",
-        "id_number":      "id_number",
-        "document_number":"id_number",
-        "nationality":    "nationality",
-        "date_of_birth":  "date_of_birth",
-        "dob":            "date_of_birth",
-        "address":        "address",
-        "gender":         "gender",
-        "place_of_birth": "place_of_birth",
-        "expiry_date":    "expiry_date",
-    }
+    """Map DU-extracted field names → citizen_profiles column names.
+
+    DU returns capitalised spaced names e.g. 'First Name', 'Date of Birth'.
+    We also handle lowercase/underscore variants for fallback.
+    """
     result: dict[str, Any] = {"raw_extracted": extracted}
+
+    # Build full_name from First Name + Last Name (DU splits them)
+    first = (extracted.get("First Name") or extracted.get("first_name") or "").strip()
+    last  = (extracted.get("Last Name")  or extracted.get("last_name")  or "").strip()
+    if first or last:
+        result["full_name"] = f"{first} {last}".strip()
+    elif extracted.get("name") or extracted.get("full_name"):
+        result["full_name"] = extracted.get("name") or extracted.get("full_name")
+
+    # Direct field mapping — DU names first, lowercase fallbacks second
+    mapping = {
+        "Passport Number":   "id_number",
+        "Document Number":   "id_number",
+        "id_number":         "id_number",
+        "document_number":   "id_number",
+        "Nationality":       "nationality",
+        "nationality":       "nationality",
+        "Date of Birth":     "date_of_birth",
+        "date_of_birth":     "date_of_birth",
+        "dob":               "date_of_birth",
+        "Gender":            "gender",
+        "gender":            "gender",
+        "Place of Birth":    "place_of_birth",
+        "place_of_birth":    "place_of_birth",
+        "Expiry Date":       "expiry_date",
+        "Date of Expiry":    "expiry_date",
+        "expiry_date":       "expiry_date",
+        "address":           "address",
+    }
     for src_key, db_col in mapping.items():
+        if db_col in result:
+            continue  # already set by a higher-priority key
         val = extracted.get(src_key)
         if val:
             result[db_col] = str(val)

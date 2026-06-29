@@ -664,7 +664,7 @@ async def websocket_endpoint(
         collected_data: dict | None = None,
     ) -> str:
         """Tool handler: forwards citizen request to UiPath Maestro."""
-        logger.warning(f"[handle_submit] called: subject={subject!r} docs={len(session_data.get('documents',[]))} collected_data_type={type(collected_data).__name__}")
+        logger.info(f"[handle_submit] called: subject={subject!r} docs={len(session_data.get('documents',[]))} collected_data_type={type(collected_data).__name__}")
         # Flush any pending AI turn into the chat log before capturing it
         if session_data.get("_ai_turn"):
             ai_text = "".join(session_data.pop("_ai_turn"))
@@ -715,7 +715,7 @@ async def websocket_endpoint(
             documents=docs or None,
             chat=in_chat,
         )
-        logger.warning(f"[handle_submit] maestro result: {result[:120]!r}")
+        logger.info(f"[handle_submit] maestro result: {result[:120]!r}")
 
         # Persist job to Supabase so citizen can resume next visit
         email = citizen_data.get("email", "")
