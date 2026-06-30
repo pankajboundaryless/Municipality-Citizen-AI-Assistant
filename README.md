@@ -95,7 +95,7 @@ In short: **the citizen-facing conversation and the UiPath→Supabase bridge are
 
 ## Setup Instructions
 
-### For Judging (fastest path — no setup required)
+### Try It Live (fastest path — no setup required)
 
 The solution is already deployed and configured end-to-end. Just open the live URL and run through a service request:
 
