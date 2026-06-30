@@ -38,7 +38,7 @@ The application is deployed on **Azure App Service (West Europe)**:
 
 ### Agent Type
 
-**This solution utilises both Coded Agents and Low-code Agents.** The table below states, explicitly, the type of every individual agent/automation component in the solution:
+This solution uses both Coded Agents and Low-code Agents. The table below lists the type of every individual agent/automation component:
 
 | Agent / Component | Type | Built with | Role |
 |---|---|---|---|
@@ -50,7 +50,7 @@ The application is deployed on **Azure App Service (West Europe)**:
 | `Municipality_ID_Management` process | **Low-code orchestration** | UiPath Maestro (BPMN, built visually in UiPath Studio) | The top-level process that wires all the above agents/workflows together end-to-end |
 | Python backend (`uipath_maestro.py`, `uipath_fetch_id.py`) | **Coded Agent** (external, code-first) | Python / FastAPI, calling UiPath Orchestrator & Document Understanding REST APIs directly | Authenticates (OAuth2), resolves folder/release/bucket, uploads documents, starts and polls the Maestro job, and is itself driven by Gemini's `submit_to_municipality` tool call — this is the code-first agent layer that bridges the conversational AI (Gemini Live) and the UiPath low-code agents |
 
-In short: **the citizen-facing conversation and the UiPath→Supabase bridge are Coded Agents (Python)**, while **the back-office request processing (triage, matching, scheduling, response generation) is built from Low-code Agents and workflows inside UiPath Maestro/Agent Builder/Studio.**
+Summary: the citizen-facing conversation and the UiPath/Supabase bridge are Coded Agents (Python); the back-office request processing (triage, matching, scheduling, response generation) is built from Low-code Agents and workflows inside UiPath Maestro, Agent Builder, and Studio.
 
 ### Comprehensive Component List
 
@@ -95,9 +95,9 @@ In short: **the citizen-facing conversation and the UiPath→Supabase bridge are
 
 ## Setup Instructions
 
-### Try It Live (fastest path — no setup required)
+### Using the Live Deployment
 
-The solution is already deployed and configured end-to-end. Just open the live URL and run through a service request:
+No setup is needed to try the application — it is already deployed and configured. Open the live URL and run through a service request:
 
 **[https://municipality-citizen-ai-f0h4cgh4affahnhb.westeurope-01.azurewebsites.net](https://municipality-citizen-ai-f0h4cgh4affahnhb.westeurope-01.azurewebsites.net)**
 
@@ -215,7 +215,7 @@ This project was developed using **Claude Code** — Anthropic's AI coding agent
 
 ### (b) How the coding agent contributed to the solution
 
-Claude Code was involved at every layer of the stack — not just as a code generator but as an active debugging and integration partner:
+Claude Code was used at every layer of the stack, for both writing code and debugging runtime issues:
 
 **Architecture & scaffolding**
 - Designed and built the full `uipath_maestro.py` client from scratch: OAuth2 token flow, folder/release/bucket resolution, job submission, polling, and output parsing
@@ -250,14 +250,14 @@ All runtime errors were submitted directly to the coding agent for root-cause an
 
 ### (c) How the agent output is integrated into the solution
 
-The coding agent's output is not referenced or suggested — it is the running code. Every file listed in the Project Structure section above was either written or substantially modified by Claude Code during live debugging sessions. The agent:
+Every file listed in the Project Structure section above was either written or substantially modified by Claude Code during development. During debugging sessions it:
 
 - Read log files from the running server in real time to diagnose errors
 - Applied fixes directly to source files using file-editing tools
 - Restarted the server and verified fixes by re-running `grep` against the live log
 - Committed and pushed changes to GitHub, then triggered Azure deployments via `gh` CLI
 
-The entire integration pipeline — citizen speaks → Gemini extracts intent → Python tool called → document uploaded to UiPath bucket → Maestro job started → job polled → reply returned to citizen → data persisted to Supabase — was debugged end-to-end with Claude Code as the primary engineering tool.
+The full integration — from the citizen's speech, through Gemini's tool call, the UiPath document upload and Maestro job, to the reply being relayed back and persisted to Supabase — was built and debugged end-to-end with Claude Code.
 
 ## Environment Variables Reference
 
