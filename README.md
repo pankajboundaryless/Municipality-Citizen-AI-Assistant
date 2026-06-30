@@ -1,6 +1,10 @@
 # Municipality Citizen AI Assistant
 
-A real-time voice and video AI assistant for municipal citizen services, built with Google Gemini Live API, UiPath Maestro, and Supabase. Citizens can speak naturally to request services (passport renewal, ID card, work permits), upload documents for automatic field extraction, and have their applications submitted directly into the municipal processing system.
+## Project Description
+
+**What it does:** Municipality Citizen AI Assistant is a real-time voice and video AI assistant that lets citizens talk naturally to a municipal office instead of filling out paper forms or navigating a portal. A citizen opens the web app, selects a service (ID card, passport, work permit, or construction permit), and speaks directly to an AI agent (Google Gemini Live). The agent asks for the required information conversationally, lets the citizen upload a photo of their ID/passport (auto-extracted via UiPath Document Understanding), and — once the citizen confirms — submits the completed request into UiPath Maestro, which runs the municipal back-office process (data matching, scheduling, email confirmation) and returns a status/reference number back to the citizen in the same conversation.
+
+**Problem it solves:** Municipal service requests (ID renewals, passports, permits) are traditionally slow and form-heavy: citizens must know which document to bring, fill in long applications, and often visit in person just to ask a basic question. This solution collapses that into a single natural conversation — voice or text, in the citizen's own language — that collects the right information, validates documents automatically, and hands off directly into the municipality's existing UiPath automation, with no manual data re-entry on either side.
 
 ## Architecture
 
@@ -33,10 +37,20 @@ The application is deployed on **Azure App Service (West Europe)**:
 ## UiPath Components Used
 
 ### Agent Type
-This solution utilises **both Coded Agents and Low-code Agents**:
 
-- **Coded Agent** — the Python FastAPI backend (`uipath_maestro.py`, `uipath_fetch_id.py`) acts as a coded agent that programmatically calls UiPath Orchestrator REST APIs, manages OAuth2 tokens, uploads documents to storage buckets, starts Maestro jobs, polls for completion, and returns results to the Gemini Live session.
-- **Low-code Agents** — the `Municipality_ID_Management` Maestro process (built in UiPath Studio as a BPMN workflow) contains low-code agents that handle the citizen request end-to-end once triggered: triage, ID extraction, data matching, scheduling, and response generation.
+**This solution utilises both Coded Agents and Low-code Agents.** The table below states, explicitly, the type of every individual agent/automation component in the solution:
+
+| Agent / Component | Type | Built with | Role |
+|---|---|---|---|
+| `Citizen_Response_Agent` | **Low-code Agent** | UiPath Agent Builder | Generates the citizen-facing reply text (`out_Reply`) returned at the end of the Maestro process |
+| Triage Agent (*"Create, Renew, Stolen ID"*) | **Low-code Agent** | UiPath Agent Builder | Classifies the incoming request into New / Renew / Stolen ID / Construction Permit / Zoning, and routes the BPMN flow accordingly |
+| `MatchDataAgent` | **Low-code Agent** | UiPath Agent Builder | Matches the citizen-supplied + DU-extracted data against municipal records before scheduling |
+| `Deserialize_ID` workflow | **Low-code (RPA workflow)** | UiPath Studio (XAML, `Main.xaml`) | Parses the `in_CitizenData` JSON argument into typed UiPath variables for downstream activities |
+| `IDP_ID_Extraction` workflow | **Low-code (RPA workflow)** | UiPath Studio (XAML, `Main.xaml`) + Document Understanding | Runs document digitization/classification/extraction as a reusable sub-process |
+| `Municipality_ID_Management` process | **Low-code orchestration** | UiPath Maestro (BPMN, built visually in UiPath Studio) | The top-level process that wires all the above agents/workflows together end-to-end |
+| Python backend (`uipath_maestro.py`, `uipath_fetch_id.py`) | **Coded Agent** (external, code-first) | Python / FastAPI, calling UiPath Orchestrator & Document Understanding REST APIs directly | Authenticates (OAuth2), resolves folder/release/bucket, uploads documents, starts and polls the Maestro job, and is itself driven by Gemini's `submit_to_municipality` tool call — this is the code-first agent layer that bridges the conversational AI (Gemini Live) and the UiPath low-code agents |
+
+In short: **the citizen-facing conversation and the UiPath→Supabase bridge are Coded Agents (Python)**, while **the back-office request processing (triage, matching, scheduling, response generation) is built from Low-code Agents and workflows inside UiPath Maestro/Agent Builder/Studio.**
 
 ### Comprehensive Component List
 
@@ -79,9 +93,25 @@ This solution utilises **both Coded Agents and Low-code Agents**:
     └── pcm-processor.js     # AudioWorklet for PCM processing
 ```
 
-## Quick Start (Local)
+## Setup Instructions
 
-### 1. Install dependencies
+### For Judging (fastest path — no setup required)
+
+The solution is already deployed and configured end-to-end. Just open the live URL and run through a service request:
+
+**[https://municipality-citizen-ai-f0h4cgh4affahnhb.westeurope-01.azurewebsites.net](https://municipality-citizen-ai-f0h4cgh4affahnhb.westeurope-01.azurewebsites.net)**
+
+1. Sign in (Microsoft or Google SSO).
+2. Fill in your name/email on the welcome screen and select a service (e.g. Passport).
+3. Click **Start Session** and allow microphone access.
+4. Speak naturally to the AI assistant — optionally upload a photo of an ID/passport to auto-fill fields.
+5. Confirm submission when asked. The assistant will call UiPath Maestro and relay back a status/reference number in the same conversation.
+
+To run it locally instead (e.g. to inspect logs or modify code), follow the steps below.
+
+### Running Locally
+
+#### 1. Install dependencies
 
 ```bash
 python -m venv .venv
@@ -89,7 +119,7 @@ source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### 2. Configure environment
+#### 2. Configure environment
 
 Create a `.env` file in the project root:
 
@@ -124,7 +154,7 @@ GOOGLE_CLIENT_SECRET=...
 SESSION_SECRET_KEY=change-me-to-a-long-random-secret
 ```
 
-### 3. Start the server
+#### 3. Start the server
 
 ```bash
 python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
