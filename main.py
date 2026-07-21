@@ -12,7 +12,7 @@ load_dotenv()  # Must run before any module that reads env vars at import time
 
 from fastapi import Depends, FastAPI, File, Form, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -84,6 +84,11 @@ app.add_middleware(
 app.include_router(auth_router)
 
 app.mount("/static", StaticFiles(directory="frontend"), name="static")
+
+
+@app.get("/google03aab66551ce32dc.html", response_class=PlainTextResponse)
+def google_verification():
+    return "google-site-verification: google03aab66551ce32dc.html"
 
 
 @app.on_event("startup")
