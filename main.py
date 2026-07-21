@@ -86,9 +86,9 @@ app.include_router(auth_router)
 app.mount("/static", StaticFiles(directory="frontend"), name="static")
 
 
-@app.get("/google03aab66551ce32dc.html", response_class=PlainTextResponse)
+@app.get("/google7d65a8b064e923d2.html", response_class=PlainTextResponse)
 def google_verification():
-    return "google-site-verification: google03aab66551ce32dc.html"
+    return "google-site-verification: google7d65a8b064e923d2.html"
 
 
 @app.on_event("startup")
