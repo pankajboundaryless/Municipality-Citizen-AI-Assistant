@@ -26,27 +26,70 @@ logging.basicConfig(level=logging.DEBUG, format="%(levelname)s  %(name)s  %(mess
 # ── Mock data ─────────────────────────────────────────────────────────────────
 
 SESSION_ID = str(uuid.uuid4())
-SUBJECT    = "Passport Renewal"
+SUBJECT    = "Identity Document Request"
 
 # Mock document: read log.txt from the project root (or an empty fallback)
 _LOG_FILE = pathlib.Path(__file__).parent / "log.txt"
 MOCK_DOCUMENT_NAME = "log.txt"
 MOCK_DOCUMENT_DATA = _LOG_FILE.read_bytes() if _LOG_FILE.exists() else b"mock document content"
 
+# ── Mock DU-extracted fields (raw extractor field names) ──────────────────────
+MOCK_DU_EXTRACTED = {
+    "FirstName":      "Maria",
+    "LastName":       "Rossi",
+    "DocumentNumber": "CA12345CA",
+    "DateOfBirth":    "01/01/1985",
+    "PlaceOfBirth":   "Roma, Italia",
+    "ExpiryDate":     "15/03/2025",
+}
+
+# ── Mock AI-collected structured fields ───────────────────────────────────────
+MOCK_COLLECTED_DATA = {
+    "dateOfBirth":          "01/01/1985",
+    "placeOfBirth":         "Roma",
+    "nationality":          "Italian",
+    "address":              "Via Roma 1, 00100 Roma, Italia",
+    "reasonForApplication": "new ID",
+    "currentIdNumber":      "CA12345CA",
+    "currentIdExpiry":      "15/03/2025",
+    "replacementReason":    "",
+    "policeReportReference": "",
+}
+
+# ── Mock conversation transcript ──────────────────────────────────────────────
+MOCK_CHAT = """\
+Agent: Buongiorno Maria! Sono l'assistente virtuale del Comune. Come posso aiutarla oggi con la creazione della carta d'identità?
+User: Buongiorno, devo creare la carta d'identità.
+Agent: Capisco.  Può confermare che la data di nascita è il 1° gennaio 1985?
+User: Sì, esatto.
+Agent: Perfetto. E l'indirizzo di residenza attuale?
+User: Via Roma 1, 00100 Roma.
+Agent: Ho tutto il necessario. Riepilogando: nuova carta d'identità CA12345CA, residente in Via Roma 1, Roma. Procedo con l'invio?
+User: Sì, proceda pure.
+Agent: Invio la richiesta al sistema comunale...\
+"""
+
+# ── Full merged in_CitizenData (registration + DU extracted + AI collected) ───
 MOCK_CITIZEN_DATA = {
-    "name": "Maria Rossi",
-    "idNumber": "IT-7654321",
-    "email": "maria.rossi@example.com",
-    "phone": "+39 06 1234 5678",
-    "selectedService": "Passport",
+    # Registration screen fields
+    "name":             "Maria Rossi",
+    "idNumber":         "CA12345CA",
+    "email":            "stefano.n@boundaryless.com",
+    "phone":            "+39 06 1234 5678",
+    "selectedService":  "Identity Document (ID Card)",
     "preferredLanguage": "it-IT",
+    # DU extracted fields (raw extractor names)
+    **MOCK_DU_EXTRACTED,
+    # AI-collected structured fields
+    **MOCK_COLLECTED_DATA,
+    # Submit-time fields
     "requestSummary": (
-        "Citizen requests a passport renewal. Current passport number IT-7654321 "
-        "expires on 15/03/2025. Planned travel date 20/07/2026. "
-        "Proof of address and copy of expiring passport uploaded. "
-        "One photo captured via webcam."
+        "Citizen Maria Rossi requests creation of ID card CA12345CA. "
+        "Resident at Via Roma 1, 00100 Roma. "
+        "Current ID uploaded. One photo captured via webcam."
     ),
     "capturedPhotoCount": 1,
+    "documentCount":      1,
 }
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -107,20 +150,24 @@ async def step_folder(cfg: UiPathMaestroConfig, token: str) -> int | None:
         f"{cfg.base_url}/{cfg.organization}/{cfg.tenant}"
         "/orchestrator_/odata/Folders"
     )
-    params = {
-        "$filter": f"DisplayName eq '{cfg.folder_name}'",
-        "$select": "Id,DisplayName",
-    }
     headers = {"Authorization": f"Bearer {token}"}
-    print(f"  GET {url}")
-    print(f"  filter: {params['$filter']}")
-    async with aiohttp.ClientSession() as s:
-        async with s.get(url, headers=headers, params=params) as r:
-            body = await r.text()
-            print(f"  HTTP {r.status}")
-            if r.status != 200:
-                print(f"  RESPONSE: {body}")
+
+    # Try FullyQualifiedName (e.g. "Shared/Municipality_ID") then DisplayName
+    folder_id = None
+    for field in ("FullyQualifiedName", "DisplayName"):
+        params = {
+            "$filter": f"{field} eq '{cfg.folder_name}'",
+            "$select": "Id,DisplayName,FullyQualifiedName",
+            "$top": "1",
+        }
+        print(f"  GET {url}")
+        print(f"  filter: {params['$filter']}")
+        async with aiohttp.ClientSession() as s:
+            async with s.get(url, headers=headers, params=params) as r:
+                body = await r.text()
+                print(f"  HTTP {r.status}")
                 if r.status == 403:
+                    print(f"  RESPONSE: {body}")
                     print("\n  ── 403 fix checklist ──────────────────────────────────")
                     print("  The token was issued but the app has no Orchestrator role.")
                     print("  In UiPath Automation Cloud:")
@@ -132,19 +179,35 @@ async def step_folder(cfg: UiPathMaestroConfig, token: str) -> int | None:
                     print("     the 'Allow to be Automation User' role (or 'Automation User').")
                     print("  3. In the target Folder → Manage Access, add the Robot")
                     print("     Account with at least 'Automation User' role.")
-                else:
+                    return None
+                if r.status != 200:
+                    print(f"  RESPONSE: {body}")
                     print("\n  Hint: check UIPATH_ORGANIZATION and UIPATH_TENANT are the")
                     print("  short logical names (e.g. 'mycompany', 'DefaultTenant'),")
                     print("  NOT full URLs.")
-                return None
-            items = json.loads(body).get("value", [])
-            if not items:
-                print(f"  Folder '{cfg.folder_name}' not found.")
-                print("  Check UIPATH_FOLDER_NAME in .env (default: 'Default').")
-                return None
-            folder_id = items[0]["Id"]
-            print(f"  Folder ID: {folder_id}  ({items[0]['DisplayName']})")
-            return folder_id
+                    continue
+                items = json.loads(body).get("value", [])
+                if items:
+                    folder_id = items[0]["Id"]
+                    fqn = items[0].get("FullyQualifiedName") or items[0]["DisplayName"]
+                    print(f"  Folder ID: {folder_id}  ({fqn})")
+                    return folder_id
+                print(f"  No match for {field} = '{cfg.folder_name}'")
+
+    print(f"\n  Folder '{cfg.folder_name}' not found — listing all available folders:\n")
+    params_all = {"$select": "Id,DisplayName,FullyQualifiedName", "$top": "50"}
+    async with aiohttp.ClientSession() as s:
+        async with s.get(url, headers=headers, params=params_all) as r:
+            all_body = await r.text()
+            if r.status == 200:
+                all_items = json.loads(all_body).get("value", [])
+                for fi in all_items:
+                    fqn = fi.get("FullyQualifiedName") or fi.get("DisplayName", "")
+                    print(f"    Id={fi['Id']}  DisplayName={fi['DisplayName']}  FullyQualifiedName={fqn}")
+                print(f"\n  → Set UIPATH_FOLDER_NAME to one of the FullyQualifiedName values above.")
+            else:
+                print(f"    Could not list folders: HTTP {r.status}")
+    return None
 
 
 async def step_release(
@@ -188,9 +251,22 @@ async def step_release(
 
     print(
         f"\n  WARNING: process '{cfg.process_key}' not found in folder.\n"
-        "  Check UIPATH_PROCESS_KEY matches the process Name or ProcessKey shown\n"
-        "  in Orchestrator → Automations → Processes."
+        "  Listing all releases in this folder so you can find the correct name:\n"
     )
+    params_all = {"$select": "Key,Name,ProcessKey", "$top": "50"}
+    async with aiohttp.ClientSession() as s:
+        async with s.get(url, headers=headers, params=params_all) as r:
+            body = await r.text()
+            if r.status == 200:
+                items = json.loads(body).get("value", [])
+                if items:
+                    for item in items:
+                        print(f"    Name={item['Name']}  |  ProcessKey={item['ProcessKey']}  |  Key={item['Key']}")
+                    print(f"\n  → Set UIPATH_PROCESS_KEY to one of the Name or ProcessKey values above.")
+                else:
+                    print("    (no releases found in this folder)")
+            else:
+                print(f"    Could not list releases: HTTP {r.status}")
     return None
 
 
@@ -313,6 +389,7 @@ async def step_start_job(
         "in_Subject":     SUBJECT,
         "in_CitizenData": json.dumps(citizen, ensure_ascii=False),
         "in_Documents":   json.dumps(uploaded_docs or []),
+        "in_Chat":        MOCK_CHAT,
     }
 
     start_info: dict = {

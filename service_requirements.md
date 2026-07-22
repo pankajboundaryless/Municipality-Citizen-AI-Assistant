@@ -10,8 +10,7 @@ will validate completeness and return an appropriate status (OK / data missing /
 ## Identity Document (ID Card)
 
 ### Required Information
-Collect as many of these as possible before submitting. Always ask politely — never block the
-conversation if a field is missing.
+Collect as many of these as possible before submitting. Always ask politely and only once for each field — never block the conversation if a field is missing.
 
 | Field | Notes |
 |---|---|

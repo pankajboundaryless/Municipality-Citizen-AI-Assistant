@@ -144,7 +144,6 @@ class GeminiLive:
                                                 loop = asyncio.get_running_loop()
                                                 result = await loop.run_in_executor(None, lambda: tool_func(**args))
                                         except Exception as e:
-                                            logger.error(f"Tool '{func_name}' raised {type(e).__name__}: {e}", exc_info=True)
                                             result = f"Error: {e}"
 
                                         function_responses.append(types.FunctionResponse(
@@ -153,8 +152,6 @@ class GeminiLive:
                                             response={"result": result}
                                         ))
                                         await event_queue.put({"type": "tool_call", "name": func_name, "args": args, "result": result})
-                                    else:
-                                        logger.warning(f"Unknown tool called by Gemini: '{func_name}' — not in tool_mapping")
                                 
                                 await session.send_tool_response(function_responses=function_responses)
                         
